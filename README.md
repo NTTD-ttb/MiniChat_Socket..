@@ -252,3 +252,4 @@ bao gồm:
 | Client-3 không thấy tin nhắn riêng/nhóm | Đúng thiết kế: chỉ người liên quan/thành viên nhận | Không cần xử lý |
 | Không thấy nhóm sau khi tạo | Chưa bấm **Tạo nhóm** hoặc chọn thiếu người | Chọn ít nhất 2 client khác rồi xác nhận |
 | Đã sửa code nhưng chạy vẫn như cũ | Chưa biên dịch lại | Chạy lại `javac` hoặc nút Run của VS Code |
+ #alo
