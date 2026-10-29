@@ -1,0 +1,17 @@
+# Thư mục biên dịch
+out/
+bin/
+build/
+
+# Tệp lớp / gói
+*.class
+*.jar
+
+# Nhật ký và tệp tạm
+*.log
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.iml
