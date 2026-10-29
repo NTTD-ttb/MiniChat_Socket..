@@ -7,6 +7,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,6 +31,13 @@ import minichat_ok.common.Protocol;
  *
  * <p>Lớp này không phụ thuộc Swing: mọi thông báo được đẩy ra ngoài qua
  * {@link Consumer} nhận nhật ký do lớp giao diện truyền vào.</p>
+ *
+ * <p>Phần quản trị phục vụ giao diện Server: {@link #getConnectedClients()} và
+ * {@link #disconnectClient(String)} cho tab người dùng; {@link #getGroups()},
+ * {@link #addGroupMember(String, String)}, {@link #removeGroupMember(String, String)},
+ * {@link #renameGroup(String, String)}, {@link #deleteGroup(String)} cho tab nhóm.
+ * Giao diện đăng ký {@link #setClientListListener(Consumer)} /
+ * {@link #setGroupListListener(Consumer)} để nhận ảnh chụp dữ liệu sau mỗi thay đổi.</p>
  */
 public class ChatServer {
 
@@ -79,6 +87,16 @@ public class ChatServer {
         // Mặc định: không ai quan tâm số lượng nhóm.
     };
 
+    /** Nơi nhận danh sách client đang kết nối (giao diện quản lý người dùng). */
+    private volatile Consumer<List<ClientInfo>> clientListListener = clients -> {
+        // Mặc định: không ai quan tâm danh sách client.
+    };
+
+    /** Nơi nhận danh sách nhóm hiện có (giao diện quản lý nhóm). */
+    private volatile Consumer<List<GroupInfo>> groupListListener = currentGroups -> {
+        // Mặc định: không ai quan tâm danh sách nhóm.
+    };
+
     private ServerSocket serverSocket;
     private Thread acceptThread;
     private volatile boolean running;
@@ -113,6 +131,112 @@ public class ChatServer {
         this.groupCountListener = (listener != null) ? listener : count -> {
             // Bỏ đăng ký.
         };
+    }
+
+    /**
+     * Đăng ký nơi nhận danh sách client đang kết nối (đã được duyệt). Danh sách được
+     * gửi lại mỗi khi có client vào/rời phòng hoặc khi server dừng.
+     *
+     * @param listener hàm nhận danh sách (chỉ đọc), có thể là {@code null} để bỏ đăng ký
+     */
+    public void setClientListListener(Consumer<List<ClientInfo>> listener) {
+        this.clientListListener = (listener != null) ? listener : clients -> {
+            // Bỏ đăng ký.
+        };
+        notifyClientList();
+    }
+
+    /**
+     * Đăng ký nơi nhận danh sách nhóm hiện có (kèm thành viên). Danh sách được gửi lại
+     * mỗi khi nhóm được tạo/xóa/đổi tên hoặc thành viên thay đổi.
+     *
+     * @param listener hàm nhận danh sách (chỉ đọc), có thể là {@code null} để bỏ đăng ký
+     */
+    public void setGroupListListener(Consumer<List<GroupInfo>> listener) {
+        this.groupListListener = (listener != null) ? listener : currentGroups -> {
+            // Bỏ đăng ký.
+        };
+        notifyGroupList();
+    }
+
+    /**
+     * Thông tin tóm tắt của một client đang kết nối, dùng cho giao diện quản lý người dùng.
+     */
+    public static final class ClientInfo {
+
+        private final String name;
+        private final String address;
+
+        ClientInfo(String name, String address) {
+            this.name = name;
+            this.address = address;
+        }
+
+        /** @return tên định danh do Server cấp, ví dụ {@code "Client-1"} */
+        public String getName() {
+            return name;
+        }
+
+        /** @return địa chỉ {@code ip:port} của client */
+        public String getAddress() {
+            return address;
+        }
+
+        @Override
+        public String toString() {
+            return name + " (" + address + ")";
+        }
+    }
+
+    /**
+     * Thông tin tóm tắt của một nhóm, dùng cho giao diện quản lý nhóm.
+     *
+     * <p>Danh sách thành viên là bản sao tại thời điểm tạo đối tượng nên giao diện có
+     * thể hiển thị mà không cần khóa.</p>
+     */
+    public static final class GroupInfo {
+
+        private final String id;
+        private final String name;
+        private final String owner;
+        private final List<String> members;
+
+        GroupInfo(Group group) {
+            this.id = group.getId();
+            this.name = group.getName();
+            this.owner = group.getOwner();
+            this.members = List.copyOf(group.snapshotMembers());
+        }
+
+        /** @return mã nhóm, ví dụ {@code "G1"} */
+        public String getId() {
+            return id;
+        }
+
+        /** @return tên hiển thị của nhóm (quản trị viên có thể đổi) */
+        public String getName() {
+            return name;
+        }
+
+        /** @return tên client đã tạo nhóm */
+        public String getOwner() {
+            return owner;
+        }
+
+        /** @return danh sách thành viên (bản sao, chỉ đọc) */
+        public List<String> getMembers() {
+            return members;
+        }
+
+        /** @return số thành viên hiện tại */
+        public int getMemberCount() {
+            return members.size();
+        }
+
+        @Override
+        public String toString() {
+            return id + " - " + name;
+        }
     }
 
     /**
@@ -301,6 +425,8 @@ public class ChatServer {
         thread.start();
 
         log("Server đã khởi động, đang lắng nghe tại cổng " + port);
+        notifyClientList();
+        notifyGroupList();
     }
 
     /**
@@ -344,6 +470,8 @@ public class ChatServer {
         groups.clear();
         notifyClientCount();
         notifyGroupCount();
+        notifyClientList();
+        notifyGroupList();
 
         Thread thread = this.acceptThread;
         this.acceptThread = null;
@@ -414,6 +542,7 @@ public class ChatServer {
         clientsByName.put(handler.getClientName(), handler);
         log(handler.getClientName() + " đã tham gia phòng chat. Số client đang kết nối: " + handlers.size());
         notifyClientCount();
+        notifyClientList();
         broadcastSystem(handler.getClientName() + " đã tham gia phòng chat.");
         broadcastUserList();
         return true;
@@ -474,6 +603,7 @@ public class ChatServer {
         clientsByName.remove(clientName, handler);
         log(clientName + " đã rời phòng chat. Số client đang kết nối: " + handlers.size());
         notifyClientCount();
+        notifyClientList();
 
         leaveAllGroups(clientName);
 
@@ -481,6 +611,7 @@ public class ChatServer {
             broadcastSystem(clientName + " đã rời phòng chat.");
             broadcastUserList();
         }
+        notifyGroupList();
     }
 
     /**
@@ -577,7 +708,7 @@ public class ChatServer {
             }
 
             String groupId = "G" + groupCounter.incrementAndGet();
-            Group group = new Group(groupId, creatorName, memberNames);
+            Group group = new Group(groupId, creatorName, "Nhóm của " + creatorName, memberNames);
             groups.put(groupId, group);
 
             String line = Protocol.groupInfoMessage(groupId, memberNames);
@@ -588,6 +719,7 @@ public class ChatServer {
                     + String.join(", ", memberNames));
         }
         notifyGroupCount();
+        notifyGroupList();
     }
 
     /**
@@ -646,6 +778,7 @@ public class ChatServer {
         }
         removeMemberAndNotify(group, senderName, "đã rời nhóm");
         notifyGroupCount();
+        notifyGroupList();
     }
 
     /**
@@ -817,6 +950,31 @@ public class ChatServer {
         }
     }
 
+    /**
+     * Gửi danh sách client đang kết nối cho giao diện quản lý người dùng. Lỗi trong
+     * listener của giao diện không được làm hỏng luồng server.
+     */
+    private void notifyClientList() {
+        Consumer<List<ClientInfo>> listener = this.clientListListener;
+        try {
+            listener.accept(getConnectedClients());
+        } catch (RuntimeException e) {
+            log("Lỗi khi cập nhật danh sách client: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gửi danh sách nhóm (kèm thành viên) cho giao diện quản lý nhóm.
+     */
+    private void notifyGroupList() {
+        Consumer<List<GroupInfo>> listener = this.groupListListener;
+        try {
+            listener.accept(getGroups());
+        } catch (RuntimeException e) {
+            log("Lỗi khi cập nhật danh sách nhóm: " + e.getMessage());
+        }
+    }
+
     public boolean isRunning() {
         return running;
     }
@@ -834,6 +992,228 @@ public class ChatServer {
      */
     public int getGroupCount() {
         return groups.size();
+    }
+
+    /**
+     * @return danh sách client đang kết nối (đã được duyệt), theo thứ tự tham gia
+     */
+    public List<ClientInfo> getConnectedClients() {
+        List<ClientInfo> result = new ArrayList<>();
+        for (ClientHandler handler : handlers) {
+            if (!handler.isClosed()) {
+                result.add(new ClientInfo(handler.getClientName(), handler.getClientAddress()));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @return danh sách nhóm hiện có kèm thành viên, sắp xếp theo số hiệu nhóm
+     */
+    public List<GroupInfo> getGroups() {
+        List<Group> snapshot = new ArrayList<>(groups.values());
+        snapshot.sort(Comparator.comparingInt(group -> groupNumber(group.getId())));
+        List<GroupInfo> result = new ArrayList<>(snapshot.size());
+        for (Group group : snapshot) {
+            result.add(new GroupInfo(group));
+        }
+        return result;
+    }
+
+    /**
+     * Ngắt kết nối của một client theo yêu cầu của quản trị viên Server.
+     *
+     * <p>Client nhận thông báo {@code SYS} + {@code ERR|KICKED} trước khi socket bị đóng;
+     * các client còn lại nhận thông báo rời phòng như khi client tự ngắt kết nối.</p>
+     *
+     * @param clientName tên client cần ngắt kết nối
+     * @return {@code null} nếu thành công, ngược lại là thông điệp lỗi tiếng Việt cho giao diện
+     */
+    public String disconnectClient(String clientName) {
+        String name = (clientName != null) ? clientName.trim() : "";
+        if (name.isEmpty()) {
+            return "Thiếu tên client cần ngắt kết nối.";
+        }
+        ClientHandler handler = clientsByName.get(name);
+        if (handler == null || handler.isClosed()) {
+            return "Client " + name + " không còn kết nối.";
+        }
+
+        log("Quản trị viên ngắt kết nối " + name + ".");
+        synchronized (broadcastLock) {
+            handler.sendLine(Protocol.systemMessage("Bạn đã bị quản trị viên ngắt kết nối."));
+            handler.sendLine(Protocol.errorMessage(Protocol.ERROR_KICKED,
+                    "Quản trị viên đã ngắt kết nối của bạn."));
+            handler.close();
+        }
+        return null;
+    }
+
+    /**
+     * Quản trị viên thêm một client đang kết nối vào nhóm.
+     *
+     * <p>Client được thêm nhận {@code GROUP} để tự hiện nhóm; các thành viên cũ nhận
+     * thông báo {@code SYS}. Các giới hạn giống lúc tạo nhóm được kiểm tra lại ở Server.</p>
+     *
+     * @param groupId    mã nhóm
+     * @param memberName tên client cần thêm
+     * @return {@code null} nếu thành công, ngược lại là thông điệp lỗi tiếng Việt
+     */
+    public String addGroupMember(String groupId, String memberName) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String member = (memberName != null) ? memberName.trim() : "";
+        if (id.isEmpty()) {
+            return "Thiếu mã nhóm.";
+        }
+        if (member.isEmpty()) {
+            return "Thiếu tên client cần thêm.";
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            return "Nhóm " + id + " không tồn tại.";
+        }
+        if (group.contains(member)) {
+            return member + " đã là thành viên của nhóm " + id + ".";
+        }
+        ClientHandler memberHandler = clientsByName.get(member);
+        if (memberHandler == null || memberHandler.isClosed()) {
+            return "Client " + member + " không còn kết nối.";
+        }
+        if (group.size() >= MAX_GROUP_MEMBERS) {
+            return "Nhóm " + id + " đã đủ " + MAX_GROUP_MEMBERS + " thành viên.";
+        }
+        if (countGroupsOf(member) >= MAX_GROUPS_PER_CLIENT) {
+            return member + " đã tham gia tối đa " + MAX_GROUPS_PER_CLIENT + " nhóm.";
+        }
+
+        synchronized (broadcastLock) {
+            if (!group.addMember(member)) {
+                return member + " đã là thành viên của nhóm " + id + ".";
+            }
+            sendLineTo(member, Protocol.groupInfoMessage(id, group.snapshotMembers()));
+            List<String> others = new ArrayList<>(group.snapshotMembers());
+            others.remove(member);
+            sendToNames(others, Protocol.systemMessage(
+                    member + " đã được quản trị viên thêm vào nhóm " + id + "."));
+        }
+        log("Quản trị viên thêm " + member + " vào nhóm " + id
+                + " (còn " + group.size() + " thành viên).");
+        notifyGroupList();
+        return null;
+    }
+
+    /**
+     * Quản trị viên xóa một thành viên khỏi nhóm.
+     *
+     * <p>Thành viên bị xóa nhận {@code GDEL} nên client loại nhóm khỏi danh sách; các
+     * thành viên còn lại nhận {@code GLEFT}. Nhóm rỗng bị xóa khỏi Server.</p>
+     *
+     * @param groupId    mã nhóm
+     * @param memberName tên thành viên cần xóa
+     * @return {@code null} nếu thành công, ngược lại là thông điệp lỗi tiếng Việt
+     */
+    public String removeGroupMember(String groupId, String memberName) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String member = (memberName != null) ? memberName.trim() : "";
+        if (id.isEmpty()) {
+            return "Thiếu mã nhóm.";
+        }
+        if (member.isEmpty()) {
+            return "Thiếu tên thành viên cần xóa.";
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            return "Nhóm " + id + " không tồn tại.";
+        }
+        if (!group.contains(member)) {
+            return member + " không phải thành viên của nhóm " + id + ".";
+        }
+
+        synchronized (broadcastLock) {
+            removeMemberAndNotify(group, member, "bị quản trị viên xóa khỏi nhóm");
+            sendLineTo(member, Protocol.groupDeletedMessage(id,
+                    "Bạn đã bị quản trị viên xóa khỏi nhóm " + id + "."));
+        }
+        log("Quản trị viên xóa " + member + " khỏi nhóm " + id + ".");
+        notifyGroupCount();
+        notifyGroupList();
+        return null;
+    }
+
+    /**
+     * Đổi tên hiển thị của nhóm (chỉ phía Server quản lý; các client nhận thông báo
+     * {@code SYS}).
+     *
+     * @param groupId mã nhóm
+     * @param newName tên mới
+     * @return {@code null} nếu thành công, ngược lại là thông điệp lỗi tiếng Việt
+     */
+    public String renameGroup(String groupId, String newName) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String name = (newName != null) ? newName.trim() : "";
+        if (id.isEmpty()) {
+            return "Thiếu mã nhóm.";
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            return "Nhóm " + id + " không tồn tại.";
+        }
+        if (name.isEmpty()) {
+            return "Tên nhóm không được để trống.";
+        }
+        if (name.length() > Group.MAX_NAME_LENGTH) {
+            return "Tên nhóm tối đa " + Group.MAX_NAME_LENGTH + " ký tự.";
+        }
+
+        String oldName = group.getName();
+        group.setName(name);
+        sendToNames(group.snapshotMembers(), Protocol.systemMessage(
+                "Quản trị viên đã đổi tên nhóm " + id + " thành \"" + name + "\"."));
+        log("Quản trị viên đổi tên nhóm " + id + ": \"" + oldName + "\" -> \"" + name + "\".");
+        notifyGroupList();
+        return null;
+    }
+
+    /**
+     * Xóa hẳn một nhóm; mọi thành viên nhận {@code GDEL} và client loại nhóm khỏi danh sách.
+     *
+     * @param groupId mã nhóm
+     * @return {@code null} nếu thành công, ngược lại là thông điệp lỗi tiếng Việt
+     */
+    public String deleteGroup(String groupId) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        if (id.isEmpty()) {
+            return "Thiếu mã nhóm.";
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            return "Nhóm " + id + " không tồn tại.";
+        }
+
+        synchronized (broadcastLock) {
+            groups.remove(id, group);
+            sendToNames(group.snapshotMembers(), Protocol.groupDeletedMessage(id,
+                    "Nhóm " + id + " đã bị quản trị viên xóa."));
+        }
+        log("Quản trị viên xóa nhóm " + id + " (\"" + group.getName() + "\", "
+                + group.size() + " thành viên).");
+        notifyGroupCount();
+        notifyGroupList();
+        return null;
+    }
+
+    /**
+     * Lấy số hiệu của mã nhóm để sắp xếp ({@code G2} trước {@code G10}).
+     */
+    private static int groupNumber(String groupId) {
+        if (groupId == null) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            return Integer.parseInt(groupId.substring(1));
+        } catch (RuntimeException e) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     /**

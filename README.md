@@ -20,6 +20,10 @@ Giai đoạn 3 giữ nguyên **phòng chat chung** của giai đoạn 2 và bổ
 | 2 | Nhiều client trong **một phòng chung**, broadcast tới tất cả, thông báo tham gia/rời phòng |
 | 3 | Giữ phòng chung + **chat riêng 1-1** + **chat nhóm** + danh sách online + mã lỗi |
 
+Ngoài phần chat, giao diện **Server** còn có hai tab quản trị: **Người dùng** (danh sách
+client đã được duyệt kèm `ip:port`, nút **Ngắt kết nối**) và **Nhóm** (xem nhóm cùng thành
+viên, **Thêm thành viên**, **Xóa thành viên**, **Đổi tên nhóm**, **Xóa nhóm**).
+
 ## 2. Quy tắc chat riêng và chat nhóm
 
 ### Chat riêng 1-1
@@ -42,8 +46,11 @@ Giai đoạn 3 giữ nguyên **phòng chat chung** của giai đoạn 2 và bổ
   (`ERR|NOT_MEMBER`) và không ai trong nhóm nhận được nội dung đó.
 - Giới hạn hiện tại: tối đa **20 thành viên/nhóm**, tối đa **10 nhóm/client**.
 - Người tạo nhóm (`owner`) chỉ dùng để ghi nhật ký, không có quyền đặc biệt.
-- Giai đoạn 3 **chưa có** thêm thành viên sau khi tạo, đổi tên nhóm hay xóa nhóm
-  (ngoài việc rời nhóm); nhóm tự xóa khi rỗng.
+- Quản trị viên Server quản lý nhóm ở tab **Nhóm**: thêm/xóa thành viên, đổi tên nhóm
+  (tối đa 40 ký tự) và xóa nhóm. Client được thêm nhận `GROUP|mã-nhóm|ds-thành-viên`;
+  client bị xóa khỏi nhóm nhận `GDEL` và nhóm biến mất khỏi danh sách của mình; khi nhóm
+  bị xóa, mọi thành viên nhận `GDEL`. Tên nhóm do Server giữ (mặc định
+  `Nhóm của Client-N`), phía client chỉ nhận thông báo `SYS` khi tên thay đổi.
 - Lịch sử nhóm được giữ theo từng nhóm trong phiên (tối đa 300 dòng).
 
 ## 3. Cấu trúc project
@@ -107,6 +114,12 @@ hai nút **Duyệt** và **Chặn**. Chỉ khi bấm **Duyệt**, Server mới c
 `Client-2`, `Client-3`… và danh sách online mới cập nhật; bấm **Chặn** thì client
 nhận lý do từ chối và bị đóng kết nối.
 
+Sau khi duyệt, tab **Người dùng** liệt kê từng client kèm `ip:port`; chọn một dòng rồi
+bấm **Ngắt kết nối** để đóng kết nối đó (client nhận `SYS` + `ERR|KICKED`). Tab **Nhóm**
+liệt kê mọi nhóm trên Server; chọn nhóm để xem thành viên và dùng **Thêm thành viên**
+(chọn trong danh sách client đang online), **Xóa thành viên**, **Đổi tên nhóm**,
+**Xóa nhóm**. Mọi thay đổi được đẩy ngay sang client liên quan.
+
 ### Kịch bản kiểm thử nhanh
 
 1. **Phòng chung**: ở tab **Phòng chung**, gửi `xin chào` → cả 3 client đều thấy.
@@ -119,6 +132,10 @@ nhận lý do từ chối và bị đóng kết nối.
    `Client-3 đã rời nhóm`; Client-1 và Client-2 vẫn chat nhóm bình thường.
 6. **Nhóm rỗng**: Client-2 rời nhóm, Client-1 gửi tin vẫn nhận echo; Client-1
    ngắt kết nối → Server tự xóa nhóm, số nhóm về 0.
+7. **Quản trị từ Server**: tab **Người dùng** → chọn `Client-3` → **Ngắt kết nối** →
+   Client-3 nhận thông báo và bị đóng kết nối; tab **Nhóm** → chọn `G1` → **Thêm thành
+   viên** (Client-3 kết nối lại trước), **Đổi tên nhóm**, **Xóa thành viên**, **Xóa nhóm**
+   → các client liên quan nhận `GROUP`/`GLEFT`/`GDEL`/`SYS` tương ứng.
 
 ## 6. Giao thức (UTF-8, mỗi khung tin kết thúc bằng `\n`)
 
@@ -136,7 +153,7 @@ nhận lý do từ chối và bị đóng kết nối.
 | dòng không có `\|` | Tương thích giai đoạn 1: coi là tin nhắn phòng chung |
 
 Các loại do Server sinh ra (`JOIN_OK`, `JOIN_DENY`, `NAME`, `SYS`, `GROUP`,
-`GLEFT`, `ERR`) nếu client tự gửi lên sẽ bị bỏ qua. Tiền tố lạ có chứa `|` bị từ
+`GLEFT`, `GDEL`, `ERR`) nếu client tự gửi lên sẽ bị bỏ qua. Tiền tố lạ có chứa `|` bị từ
 chối bằng `ERR|BAD_REQUEST` để tránh nội dung riêng bị phát nhầm vào phòng chung.
 
 ### Server → Client
@@ -153,13 +170,14 @@ chối bằng `ERR|BAD_REQUEST` để tránh nội dung riêng bị phát nhầm
 | `GROUP\|mã-nhóm\|ds-thành-viên` | Thông tin nhóm gửi cho từng thành viên |
 | `GMSG\|mã-nhóm\|người-gửi\|nội dung` | Tin nhắn nhóm gửi cho các thành viên |
 | `GLEFT\|mã-nhóm\|tên\|lý-do` | Một thành viên đã rời nhóm hoặc mất kết nối |
+| `GDEL\|mã-nhóm\|lý-do` | Nhóm bị xóa hoặc client bị xóa khỏi nhóm; client loại nhóm khỏi danh sách |
 | `ERR\|mã-lỗi\|thông-điệp` | Yêu cầu bị từ chối |
 
 ### Mã lỗi
 
 `TARGET_NOT_FOUND`, `SELF_TARGET`, `UNKNOWN_MEMBER`, `GROUP_TOO_SMALL`,
 `GROUP_TOO_LARGE`, `GROUP_NOT_FOUND`, `NOT_MEMBER`, `TOO_MANY_GROUPS`,
-`MESSAGE_TOO_LONG`, `BAD_REQUEST`.
+`MESSAGE_TOO_LONG`, `BAD_REQUEST`, `KICKED`.
 
 ### Luồng chấp nhận kết nối
 
@@ -198,6 +216,20 @@ bao gồm:
 - dừng server có thông báo `SYS`, khởi động lại cùng cổng thành công, số nhóm về 0
   và bộ đếm tên client được đặt lại (`Client-1`); broadcast vẫn hoạt động sau restart.
 
+Bộ kiểm thử quản trị (chạy cùng mã nguồn, không cần thao tác tay):
+
+- `TestServerManage` (headless): danh sách client đúng thứ tự/địa chỉ; thêm thành viên
+  (kèm `GROUP` cho người mới, `SYS` cho người cũ), từ chối thêm trùng/không online/nhóm
+  không tồn tại; đổi tên nhóm và các trường hợp tên rỗng/quá dài; xóa thành viên
+  (`GLEFT` cho người còn lại, `GDEL` cho người bị xóa); ngắt kết nối
+  (`SYS` + `ERR|KICKED`, client tự rời nhóm, danh sách giảm); xóa nhóm (`GDEL` cho mọi
+  thành viên) → `MANAGE TEST OK`.
+- `TestServerFrameManage` (Swing): tab **Người dùng**/ **Nhóm** có dữ liệu đúng, chọn
+  nhóm hiện thành viên, trạng thái các nút theo lựa chọn, giao diện tự làm mới sau khi
+  ngắt kết nối/xóa nhóm/dừng server → `UI MANAGE TEST OK`.
+- `TestServerFrameE2E` (Swing) vẫn đạt: duyệt/chặn qua nút trong tab **Chờ duyệt** →
+  `UI TEST OK`.
+
 ## 8. Ghi chú kỹ thuật
 
 - Giao thức văn bản thuần UTF-8, mỗi tin là một dòng kết thúc bằng đúng `\n`
@@ -225,6 +257,14 @@ bao gồm:
   `ChatClient.connect()` chỉ giữ khóa đối tượng trong lúc mở kết nối, phần chờ
   `JOIN_OK`/`JOIN_DENY` nằm ngoài khóa để luồng nhận vẫn đóng được tài nguyên khi
   Server ngắt kết nối.
+- Giao diện quản trị đăng ký `setClientListListener` / `setGroupListListener`; Server gửi
+  ảnh chụp (`ClientInfo`, `GroupInfo` với thành viên là bản sao) nên giao diện đọc dữ liệu
+  mà không cần khóa. Các phương thức `disconnectClient`, `addGroupMember`,
+  `removeGroupMember`, `renameGroup`, `deleteGroup` trả về `null` khi thành công hoặc
+  thông điệp lỗi tiếng Việt để hiển thị trực tiếp.
+- `disconnectClient` gửi `SYS` + `ERR|KICKED` rồi đóng socket trong `broadcastLock`; phần
+  dọn dẹp (rời nhóm, `GLEFT`, cập nhật danh sách) do luồng của `ClientHandler` thực hiện,
+  nên giao diện không phải chờ các thao tác đó.
 
 ## 9. Giới hạn đã biết và hướng phát triển
 
@@ -232,8 +272,10 @@ bao gồm:
   **Duyệt** thì client mới vào phòng chung (hoặc bật `setAutoApproveJoins(true)`).
 - Không lưu lịch sử ra đĩa: đóng ứng dụng là mất; client vào sau chỉ thấy tin từ
   lúc mình tham gia.
-- Chưa hỗ trợ thêm thành viên vào nhóm đã tạo, chuyển quyền owner, đổi tên/xóa nhóm
-  thủ công (nhóm tự xóa khi rỗng).
+- Chưa hỗ trợ chuyển quyền owner hay phân quyền quản trị cho client; mọi thao tác
+  thêm/xóa thành viên, đổi tên và xóa nhóm chỉ làm được từ cửa sổ Server.
+- Tên nhóm chỉ lưu phía Server (giao diện quản trị); client hiển thị mã nhóm và nhận
+  thông báo `SYS` khi tên thay đổi, chưa hiển thị tên nhóm trong danh sách của mình.
 - Một client “treo” (kết nối nhưng không đọc dữ liệu) có thể làm luồng phát tin phải
   chờ khi bộ đệm TCP đầy. Hướng nâng cấp: hàng đợi gửi riêng cho từng client kèm
   `ExecutorService` để cô lập hoàn toàn.

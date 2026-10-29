@@ -544,6 +544,22 @@ public class ClientFrame extends JFrame implements ChatClientListener {
     }
 
     @Override
+    public void onGroupDeleted(String groupId, String reason) {
+        SwingUtilities.invokeLater(() -> {
+            boolean wasMember = groupMembers.containsKey(groupId);
+            if (wasMember) {
+                removeGroupLocally(groupId);
+            }
+            String text = (reason == null || reason.isBlank())
+                    ? "Nhóm " + groupId + " đã bị xóa."
+                    : reason;
+            appendLog("[Hệ thống] " + text);
+            updateTabTitles();
+            updateControls();
+        });
+    }
+
+    @Override
     public void onError(String code, String message) {
         SwingUtilities.invokeLater(() -> {
             String text = (message == null || message.isBlank()) ? code : message;

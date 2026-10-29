@@ -35,6 +35,8 @@ import java.util.List;
  *   <li>{@code GROUP_CREATE|ds-thanh-vien} — Client yêu cầu tạo nhóm.</li>
  *   <li>{@code GLEAVE|ma-nhom} — Client yêu cầu rời nhóm.</li>
  *   <li>{@code GLEFT|ma-nhom|ten|ly-do} — Server báo một thành viên đã rời nhóm.</li>
+ *   <li>{@code GDEL|ma-nhom|ly-do} — Server báo nhóm đã bị xóa (quản trị viên xóa nhóm
+ *       hoặc xóa chính client khỏi nhóm); client loại nhóm khỏi danh sách.</li>
  *   <li>{@code ERR|ma-loi|thong-diep} — Server từ chối yêu cầu và gửi mã lỗi.</li>
  * </ul>
  *
@@ -83,6 +85,12 @@ public final class Protocol {
     /** Loại dòng báo một thành viên đã rời nhóm (Server gửi xuống). */
     public static final String TYPE_GROUP_LEFT = "GLEFT";
 
+    /**
+     * Loại dòng báo nhóm đã bị xóa hoặc client bị xóa khỏi nhóm (Server gửi xuống).
+     * Client dùng dòng này để loại nhóm khỏi danh sách của mình.
+     */
+    public static final String TYPE_GROUP_DELETE = "GDEL";
+
     /** Loại dòng báo lỗi/yêu cầu bị từ chối. */
     public static final String TYPE_ERROR = "ERR";
 
@@ -127,6 +135,9 @@ public final class Protocol {
 
     /** Mã lỗi: dòng giao thức không hợp lệ. */
     public static final String ERROR_BAD_REQUEST = "BAD_REQUEST";
+
+    /** Mã lỗi: quản trị viên Server chủ động ngắt kết nối của client. */
+    public static final String ERROR_KICKED = "KICKED";
 
     /** Độ dài tối đa của nội dung một tin nhắn (ký tự). */
     public static final int MAX_MESSAGE_LENGTH = 4000;
@@ -279,6 +290,17 @@ public final class Protocol {
     public static String groupMemberLeftMessage(String groupId, String name, String reason) {
         return TYPE_GROUP_LEFT + SEPARATOR + sanitize(groupId) + SEPARATOR
                 + sanitize(name) + SEPARATOR + sanitize(reason);
+    }
+
+    /**
+     * Tạo dòng báo nhóm đã bị xóa (hoặc client bị xóa khỏi nhóm).
+     *
+     * @param groupId mã nhóm
+     * @param reason  lý do, ví dụ {@code "Nhóm đã bị quản trị viên xóa."}
+     * @return dòng dạng {@code GDEL|G1|Nhóm đã bị quản trị viên xóa.}
+     */
+    public static String groupDeletedMessage(String groupId, String reason) {
+        return TYPE_GROUP_DELETE + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(reason);
     }
 
     /**

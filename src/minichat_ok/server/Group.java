@@ -17,21 +17,31 @@ import java.util.concurrent.CopyOnWriteArraySet;
  * ({@link minichat_ok.common.Protocol#MIN_GROUP_MEMBERS}) <b>khi tạo nhóm</b>. Sau khi
  * tạo, nhóm vẫn hoạt động dù chỉ còn 1 hoặc 2 thành viên; nhóm chỉ bị xóa khi không
  * còn thành viên nào.</p>
+ *
+ * <p>Ngoài tập thành viên, nhóm còn có {@code name} — tên hiển thị do quản trị viên
+ * Server đặt trong giao diện quản lý nhóm; tên này không gửi xuống client (client chỉ
+ * nhận thông báo {@code SYS} khi tên thay đổi).</p>
  */
 public final class Group {
 
+    /** Độ dài tối đa của tên nhóm (do quản trị viên Server đặt). */
+    public static final int MAX_NAME_LENGTH = 40;
+
     private final String id;
     private final String owner;
+    private volatile String name;
     private final Set<String> members;
 
     /**
      * @param id           mã nhóm do Server sinh, ví dụ {@code "G1"}
      * @param owner        tên người tạo nhóm (chỉ để ghi nhật ký, không có đặc quyền)
+     * @param name         tên hiển thị của nhóm (quản trị viên có thể đổi)
      * @param memberNames  danh sách thành viên ban đầu, gồm cả người tạo
      */
-    public Group(String id, String owner, Collection<String> memberNames) {
+    public Group(String id, String owner, String name, Collection<String> memberNames) {
         this.id = id;
         this.owner = owner;
+        this.name = name;
         this.members = new CopyOnWriteArraySet<>(memberNames);
     }
 
@@ -41,6 +51,20 @@ public final class Group {
 
     public String getOwner() {
         return owner;
+    }
+
+    /** @return tên hiển thị của nhóm (không nhất thiết duy nhất) */
+    public String getName() {
+        return name;
+    }
+
+    /**
+     * Đặt tên mới cho nhóm.
+     *
+     * @param newName tên mới (đã được lớp gọi kiểm tra khác rỗng và độ dài)
+     */
+    public void setName(String newName) {
+        this.name = newName;
     }
 
     /**

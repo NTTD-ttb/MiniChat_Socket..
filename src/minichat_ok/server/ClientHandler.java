@@ -152,7 +152,8 @@ public class ClientHandler implements Runnable {
                 server.sendUserList(this);
             }
             case Protocol.TYPE_NAME, Protocol.TYPE_SYSTEM, Protocol.TYPE_GROUP,
-                    Protocol.TYPE_GROUP_LEFT, Protocol.TYPE_ERROR,
+                    Protocol.TYPE_GROUP_LEFT, Protocol.TYPE_GROUP_DELETE,
+                    Protocol.TYPE_ERROR,
                     Protocol.TYPE_JOIN_OK, Protocol.TYPE_JOIN_DENY ->
                     log("Bỏ qua dòng " + type + " không hợp lệ từ " + clientName);
             case Protocol.TYPE_JOIN -> {

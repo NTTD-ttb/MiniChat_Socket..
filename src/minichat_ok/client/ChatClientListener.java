@@ -102,6 +102,16 @@ public interface ChatClientListener {
     }
 
     /**
+     * Nhóm đã bị xóa hoặc client này bị quản trị viên xóa khỏi nhóm.
+     *
+     * @param groupId mã nhóm
+     * @param reason  lý do do server gửi, ví dụ {@code "Nhóm G1 đã bị quản trị viên xóa."}
+     */
+    default void onGroupDeleted(String groupId, String reason) {
+        // Không quan tâm.
+    }
+
+    /**
      * Yêu cầu vừa gửi bị server từ chối.
      *
      * @param code    mã lỗi, ví dụ {@code "TARGET_NOT_FOUND"}

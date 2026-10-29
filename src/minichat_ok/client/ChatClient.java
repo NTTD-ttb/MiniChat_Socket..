@@ -330,6 +330,15 @@ public class ChatClient {
                     listener.onSystemMessage("Dòng GLEFT không hợp lệ: " + line);
                 }
             }
+            case Protocol.TYPE_GROUP_DELETE -> {
+                String[] parts = Protocol.fields(line, 3);
+                if (parts.length >= 2 && !parts[1].trim().isEmpty()) {
+                    String reason = (parts.length >= 3) ? parts[2] : "";
+                    listener.onGroupDeleted(parts[1].trim(), reason);
+                } else {
+                    listener.onSystemMessage("Dòng GDEL không hợp lệ: " + line);
+                }
+            }
             case Protocol.TYPE_ERROR -> {
                 String[] parts = Protocol.fields(line);
                 String code = (parts.length >= 2) ? parts[1] : "ERROR";
