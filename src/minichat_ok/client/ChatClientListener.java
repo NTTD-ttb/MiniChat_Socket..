@@ -1,6 +1,9 @@
 package minichat_ok.client;
 
 import java.util.List;
+import java.util.Map;
+
+import minichat_ok.common.GroupSummary;
 
 /**
  * Nơi nhận sự kiện từ {@link ChatClient} (giai đoạn 3).
@@ -108,6 +111,39 @@ public interface ChatClientListener {
      * @param reason  lý do do server gửi, ví dụ {@code "Nhóm G1 đã bị quản trị viên xóa."}
      */
     default void onGroupDeleted(String groupId, String reason) {
+        // Không quan tâm.
+    }
+
+    /**
+     * Danh sách <b>toàn bộ nhóm</b> trong hệ thống vừa thay đổi (giai đoạn 3 bổ sung).
+     *
+     * <p>Server gửi ảnh chụp danh sách nhóm mỗi khi có nhóm được tạo/xóa, thành viên
+     * thay đổi hoặc tên nhóm thay đổi. Nhờ vậy client hiển thị được cả nhóm mình chưa
+     * tham gia để gửi yêu cầu tham gia.</p>
+     *
+     * @param groups danh sách nhóm kèm trưởng nhóm, tên nhóm và thành viên
+     */
+    default void onGroupList(List<GroupSummary> groups) {
+        // Không quan tâm.
+    }
+
+    /**
+     * Danh sách yêu cầu tham gia nhóm đang chờ <b>trưởng nhóm là client này</b> duyệt.
+     *
+     * @param requests mỗi khóa là mã nhóm, giá trị là tên các client đang xin vào nhóm
+     */
+    default void onGroupJoinRequests(Map<String, List<String>> requests) {
+        // Không quan tâm.
+    }
+
+    /**
+     * Trưởng nhóm đã duyệt/từ chối yêu cầu tham gia nhóm của client này.
+     *
+     * @param groupId  mã nhóm
+     * @param accepted {@code true} nếu được duyệt vào nhóm
+     * @param message  thông điệp tiếng Việt do server gửi
+     */
+    default void onGroupJoinResult(String groupId, boolean accepted, String message) {
         // Không quan tâm.
     }
 

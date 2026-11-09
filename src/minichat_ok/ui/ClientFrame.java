@@ -38,6 +38,7 @@ import javax.swing.WindowConstants;
 
 import minichat_ok.client.ChatClient;
 import minichat_ok.client.ChatClientListener;
+import minichat_ok.common.GroupSummary;
 import minichat_ok.common.Protocol;
 
 /**
@@ -89,16 +90,34 @@ public class ClientFrame extends JFrame implements ChatClientListener {
     // --- Tab nhóm ---
     private final DefaultListModel<GroupItem> groupModel = new DefaultListModel<>();
     private final JList<GroupItem> groupList = new JList<>(groupModel);
+    private final DefaultListModel<GroupItem> allGroupModel = new DefaultListModel<>();
+    private final JList<GroupItem> allGroupList = new JList<>(allGroupModel);
+    private final DefaultListModel<JoinRequestItem> joinRequestModel = new DefaultListModel<>();
+    private final JList<JoinRequestItem> joinRequestList = new JList<>(joinRequestModel);
+    private final JTabbedPane groupSideTabs = new JTabbedPane();
     private final JLabel groupHeader = new JLabel("Chưa có nhóm nào");
     private final JTextArea groupArea = new JTextArea();
     private final JTextField groupInput = new JTextField();
     private final JButton groupSendButton = new JButton("Gửi nhóm");
     private final JButton createGroupButton = new JButton("Tạo nhóm");
     private final JButton leaveGroupButton = new JButton("Rời nhóm");
+    private final JButton joinGroupButton = new JButton("Xin vào nhóm");
+    private final JButton approveJoinButton = new JButton("Duyệt");
+    private final JButton refuseJoinButton = new JButton("Từ chối");
+    private final JButton addMemberButton = new JButton("Thêm TV");
+    private final JButton kickMemberButton = new JButton("Xóa TV");
+    private final JButton renameGroupButton = new JButton("Đổi tên");
+    private final JButton deleteGroupButton = new JButton("Xóa nhóm");
     private final transient Map<String, Set<String>> groupMembers = new LinkedHashMap<>();
     private final transient Map<String, List<String>> groupHistory = new LinkedHashMap<>();
     private final transient Map<String, Integer> groupUnread = new LinkedHashMap<>();
+    /** Ảnh chụp mới nhất của toàn bộ nhóm (server gửi qua {@code GALL}/{@code GALL_END}). */
+    private final transient Map<String, GroupSummary> allGroups = new LinkedHashMap<>();
+    /** Yêu cầu chờ duyệt mà client này là trưởng nhóm (server gửi qua {@code GJREQ}). */
+    private final transient Map<String, List<String>> pendingJoinRequests = new LinkedHashMap<>();
     private String currentGroupId;
+    private int allGroupsTabIndex;
+    private int joinRequestsTabIndex;
 
     // --- Trạng thái phiên ---
     private transient ChatClient client;
@@ -114,21 +133,31 @@ public class ClientFrame extends JFrame implements ChatClientListener {
     }
 
     /**
-     * Một dòng trong danh sách nhóm: mã nhóm + số thành viên hiện tại.
+     * Một dòng trong danh sách nhóm: nhãn hiển thị + mã nhóm + số thành viên.
      */
     private static final class GroupItem {
 
         private final String id;
         private final int memberCount;
+        private final String text;
 
-        GroupItem(String id, int memberCount) {
+        GroupItem(String id, String label, int memberCount) {
+            this(id, label, null, memberCount);
+        }
+
+        GroupItem(String id, String label, String owner, int memberCount) {
             this.id = id;
             this.memberCount = memberCount;
+            String base = (label == null || label.isBlank()) ? id : label;
+            boolean hasOwner = owner != null && !owner.isBlank();
+            this.text = hasOwner
+                    ? base + " - " + memberCount + " TV - trưởng nhóm: " + owner
+                    : base + " (" + memberCount + " thành viên)";
         }
 
         @Override
         public String toString() {
-            return id + " (" + memberCount + " thành viên)";
+            return text;
         }
 
         @Override
@@ -145,6 +174,26 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         @Override
         public int hashCode() {
             return id.hashCode();
+        }
+    }
+
+    /**
+     * Một dòng trong danh sách "Yêu cầu chờ duyệt": client đang xin vào một nhóm
+     * do chính client này làm trưởng nhóm.
+     */
+    private static final class JoinRequestItem {
+
+        private final String groupId;
+        private final String clientName;
+
+        JoinRequestItem(String groupId, String clientName) {
+            this.groupId = groupId;
+            this.clientName = clientName;
+        }
+
+        @Override
+        public String toString() {
+            return clientName + " xin vào " + groupId;
         }
     }
 
@@ -274,24 +323,18 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        groupList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        groupList.setVisibleRowCount(14);
-        groupList.addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) {
-                onGroupSelected();
+        groupSideTabs.addTab("Nhóm của bạn", buildMyGroupsSection());
+        allGroupsTabIndex = groupSideTabs.getTabCount();
+        groupSideTabs.addTab("Tất cả nhóm", buildAllGroupsSection());
+        joinRequestsTabIndex = groupSideTabs.getTabCount();
+        groupSideTabs.addTab("Yêu cầu duyệt", buildJoinRequestsSection());
+        groupSideTabs.setPreferredSize(new Dimension(300, 0));
+        groupSideTabs.addChangeListener(e -> {
+            if (groupSideTabs.getSelectedIndex() == allGroupsTabIndex) {
+                // Mở tab "Tất cả nhóm" thì xin ảnh chụp mới nhất để danh sách không cũ.
+                requestGroupListQuietly();
             }
         });
-        JScrollPane groupScroll = new JScrollPane(groupList);
-        groupScroll.setBorder(BorderFactory.createTitledBorder("Nhóm của bạn"));
-
-        JPanel groupButtons = new JPanel(new GridLayout(2, 1, 4, 4));
-        groupButtons.add(createGroupButton);
-        groupButtons.add(leaveGroupButton);
-
-        JPanel groupsPanel = new JPanel(new BorderLayout(0, 6));
-        groupsPanel.add(groupScroll, BorderLayout.CENTER);
-        groupsPanel.add(groupButtons, BorderLayout.SOUTH);
-        groupsPanel.setPreferredSize(new Dimension(230, 0));
 
         groupArea.setEditable(false);
         groupArea.setLineWrap(true);
@@ -307,20 +350,124 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         groupInputPanel.add(groupSendButton, BorderLayout.EAST);
 
         JPanel right = new JPanel(new BorderLayout(0, 8));
-        right.add(groupHeader, BorderLayout.NORTH);
+        right.add(buildGroupHeaderSection(), BorderLayout.NORTH);
         right.add(groupChatScroll, BorderLayout.CENTER);
         right.add(groupInputPanel, BorderLayout.SOUTH);
 
-        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, groupsPanel, right);
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, groupSideTabs, right);
         split.setResizeWeight(0.0);
-        split.setDividerLocation(230);
+        split.setDividerLocation(300);
         panel.add(split, BorderLayout.CENTER);
 
         createGroupButton.addActionListener(e -> createGroup());
         leaveGroupButton.addActionListener(e -> leaveGroup());
+        joinGroupButton.addActionListener(e -> requestJoinSelectedGroup());
+        approveJoinButton.addActionListener(e -> resolveSelectedJoinRequest(true));
+        refuseJoinButton.addActionListener(e -> resolveSelectedJoinRequest(false));
+        addMemberButton.addActionListener(e -> addMemberToCurrentGroup());
+        kickMemberButton.addActionListener(e -> removeMemberFromCurrentGroup());
+        renameGroupButton.addActionListener(e -> renameCurrentGroup());
+        deleteGroupButton.addActionListener(e -> deleteCurrentGroup());
         groupSendButton.addActionListener(e -> sendGroupMessage());
         groupInput.addActionListener(e -> sendGroupMessage());
         return panel;
+    }
+
+    /**
+     * Cột trái, tab 1: các nhóm mà client này đang là thành viên.
+     */
+    private JPanel buildMyGroupsSection() {
+        groupList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        groupList.setVisibleRowCount(14);
+        groupList.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                onGroupSelected();
+            }
+        });
+        JScrollPane groupScroll = new JScrollPane(groupList);
+        groupScroll.setBorder(BorderFactory.createEmptyBorder());
+
+        JPanel groupButtons = new JPanel(new GridLayout(1, 2, 6, 4));
+        groupButtons.add(createGroupButton);
+        groupButtons.add(leaveGroupButton);
+
+        JPanel section = new JPanel(new BorderLayout(0, 6));
+        section.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        section.add(groupScroll, BorderLayout.CENTER);
+        section.add(groupButtons, BorderLayout.SOUTH);
+        return section;
+    }
+
+    /**
+     * Cột trái, tab 2: toàn bộ nhóm trong hệ thống để gửi yêu cầu tham gia.
+     */
+    private JPanel buildAllGroupsSection() {
+        allGroupList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        allGroupList.setVisibleRowCount(14);
+        allGroupList.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                updateGroupControls();
+            }
+        });
+        JScrollPane allScroll = new JScrollPane(allGroupList);
+        allScroll.setBorder(BorderFactory.createEmptyBorder());
+
+        JPanel buttons = new JPanel(new GridLayout(1, 1, 6, 4));
+        buttons.add(joinGroupButton);
+
+        JPanel section = new JPanel(new BorderLayout(0, 6));
+        section.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        section.add(new JLabel("Chọn một nhóm rồi bấm \"Xin vào nhóm\" để chờ trưởng nhóm duyệt."),
+                BorderLayout.NORTH);
+        section.add(allScroll, BorderLayout.CENTER);
+        section.add(buttons, BorderLayout.SOUTH);
+        return section;
+    }
+
+    /**
+     * Cột trái, tab 3: yêu cầu tham gia nhóm đang chờ client này (trưởng nhóm) duyệt.
+     */
+    private JPanel buildJoinRequestsSection() {
+        joinRequestList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        joinRequestList.setVisibleRowCount(14);
+        joinRequestList.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                updateGroupControls();
+            }
+        });
+        JScrollPane requestScroll = new JScrollPane(joinRequestList);
+        requestScroll.setBorder(BorderFactory.createEmptyBorder());
+
+        JPanel buttons = new JPanel(new GridLayout(1, 2, 6, 4));
+        buttons.add(approveJoinButton);
+        buttons.add(refuseJoinButton);
+
+        JPanel section = new JPanel(new BorderLayout(0, 6));
+        section.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        section.add(requestScroll, BorderLayout.CENTER);
+        section.add(buttons, BorderLayout.SOUTH);
+        return section;
+    }
+
+    /**
+     * Phần đầu khung chat nhóm: hàng nút dành cho trưởng nhóm + tiêu đề nhóm.
+     */
+    private JPanel buildGroupHeaderSection() {
+        addMemberButton.setToolTipText("Thêm một client đang online vào nhóm (chỉ trưởng nhóm)");
+        kickMemberButton.setToolTipText("Xóa một thành viên khỏi nhóm (chỉ trưởng nhóm)");
+        renameGroupButton.setToolTipText("Đổi tên nhóm (chỉ trưởng nhóm)");
+        deleteGroupButton.setToolTipText("Xóa hẳn nhóm (chỉ trưởng nhóm)");
+
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+        toolbar.add(addMemberButton);
+        toolbar.add(kickMemberButton);
+        toolbar.add(renameGroupButton);
+        toolbar.add(deleteGroupButton);
+
+        JPanel header = new JPanel(new BorderLayout());
+        header.add(toolbar, BorderLayout.NORTH);
+        header.add(groupHeader, BorderLayout.CENTER);
+        return header;
     }
 
     private void connectToServer() {
@@ -420,6 +567,7 @@ public class ClientFrame extends JFrame implements ChatClientListener {
             clientName = name;
             setTitle("MiniChat - Client [" + name + "]");
             applyConnectedStatus();
+            requestGroupListQuietly();
         });
     }
 
@@ -557,6 +705,151 @@ public class ClientFrame extends JFrame implements ChatClientListener {
             updateTabTitles();
             updateControls();
         });
+    }
+
+    @Override
+    public void onGroupList(List<GroupSummary> groups) {
+        SwingUtilities.invokeLater(() -> {
+            applyGroupSnapshot((groups != null) ? groups : List.of());
+            updateGroupControls();
+        });
+    }
+
+    @Override
+    public void onGroupJoinRequests(Map<String, List<String>> requests) {
+        SwingUtilities.invokeLater(() -> {
+            pendingJoinRequests.clear();
+            if (requests != null) {
+                pendingJoinRequests.putAll(requests);
+            }
+            joinRequestModel.clear();
+            for (Map.Entry<String, List<String>> entry : pendingJoinRequests.entrySet()) {
+                for (String requester : entry.getValue()) {
+                    joinRequestModel.addElement(new JoinRequestItem(entry.getKey(), requester));
+                }
+            }
+            updateJoinRequestsTab();
+            updateGroupControls();
+        });
+    }
+
+    @Override
+    public void onGroupJoinResult(String groupId, boolean accepted, String message) {
+        SwingUtilities.invokeLater(() -> {
+            String text = (message != null && !message.isBlank())
+                    ? message
+                    : (accepted
+                            ? "Yêu cầu vào nhóm " + groupId + " đã được duyệt."
+                            : "Yêu cầu vào nhóm " + groupId + " đã bị từ chối.");
+            String line = formatLine("[Hệ thống] " + text);
+            if (groupId != null && !groupId.isBlank()) {
+                addHistoryLine(groupHistory, groupId, line);
+                if (groupId.equals(currentGroupId)) {
+                    appendToArea(groupArea, line);
+                }
+            }
+            appendLog("[Hệ thống] " + text);
+            if (accepted) {
+                requestGroupListQuietly();
+            }
+        });
+    }
+
+    /**
+     * Áp dụng ảnh chụp danh sách nhóm do server gửi: cập nhật cả tab "Tất cả nhóm"
+     * lẫn danh sách "Nhóm của bạn" (nguồn dữ liệu chuẩn là server).
+     */
+    private void applyGroupSnapshot(List<GroupSummary> groups) {
+        GroupItem selectedAll = allGroupList.getSelectedValue();
+        allGroups.clear();
+        for (GroupSummary summary : groups) {
+            if (summary != null && !summary.getId().isEmpty()) {
+                allGroups.put(summary.getId(), summary);
+            }
+        }
+        allGroupModel.clear();
+        for (GroupSummary summary : allGroups.values()) {
+            allGroupModel.addElement(new GroupItem(summary.getId(), labelOf(summary),
+                    summary.getOwner(), summary.getMemberCount()));
+        }
+        if (selectedAll != null) {
+            selectAllGroup(selectedAll.id);
+        }
+
+        if (clientName == null) {
+            return;
+        }
+        Set<String> mine = new LinkedHashSet<>();
+        for (GroupSummary summary : allGroups.values()) {
+            if (!summary.contains(clientName)) {
+                continue;
+            }
+            mine.add(summary.getId());
+            Set<String> members = groupMembers.computeIfAbsent(summary.getId(),
+                    k -> new LinkedHashSet<>());
+            members.clear();
+            members.addAll(summary.getMembers());
+            updateGroupItem(summary.getId(), summary.getMemberCount());
+        }
+        for (String groupId : new ArrayList<>(groupMembers.keySet())) {
+            if (!mine.contains(groupId)) {
+                removeGroupLocally(groupId);
+            }
+        }
+        updateGroupHeader();
+        updateGroupInputState();
+        updateTabTitles();
+    }
+
+    /**
+     * @return nhãn hiển thị của nhóm, ví dụ {@code "Học tập [G1]"} hoặc {@code "G1"}
+     */
+    private static String labelOf(GroupSummary summary) {
+        String name = summary.getName();
+        if (name == null || name.isBlank() || name.equals(summary.getId())) {
+            return summary.getId();
+        }
+        return name + " [" + summary.getId() + "]";
+    }
+
+    /**
+     * @return nhãn của nhóm đang có trong ảnh chụp (dùng cho danh sách "Nhóm của bạn")
+     */
+    private String groupLabel(String groupId) {
+        GroupSummary summary = allGroups.get(groupId);
+        return (summary != null) ? labelOf(summary) : groupId;
+    }
+
+    private void selectAllGroup(String groupId) {
+        for (int i = 0; i < allGroupModel.size(); i++) {
+            if (allGroupModel.get(i).id.equals(groupId)) {
+                allGroupList.setSelectedIndex(i);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Xin lại danh sách nhóm; lỗi gửi được bỏ qua vì đây chỉ là làm mới giao diện.
+     */
+    private void requestGroupListQuietly() {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            return;
+        }
+        try {
+            current.requestGroupList();
+        } catch (IOException | RuntimeException ignored) {
+            // Không ảnh hưởng chức năng chính; danh sách sẽ được cập nhật ở lần sau.
+        }
+    }
+
+    private void updateJoinRequestsTab() {
+        int count = joinRequestModel.size();
+        if (joinRequestsTabIndex >= 0 && joinRequestsTabIndex < groupSideTabs.getTabCount()) {
+            groupSideTabs.setTitleAt(joinRequestsTabIndex,
+                    (count > 0) ? "Yêu cầu duyệt (" + count + ")" : "Yêu cầu duyệt");
+        }
     }
 
     @Override
@@ -761,6 +1054,261 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         removeGroupLocally(groupId);
     }
 
+    /**
+     * Gửi yêu cầu tham gia nhóm đang chọn ở tab "Tất cả nhóm".
+     */
+    private void requestJoinSelectedGroup() {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            showError("Chưa kết nối tới server. Hãy bấm Kết nối trước.");
+            return;
+        }
+        GroupItem item = allGroupList.getSelectedValue();
+        if (item == null) {
+            showError("Hãy chọn một nhóm trong danh sách \"Tất cả nhóm\".");
+            return;
+        }
+        if (groupMembers.containsKey(item.id)) {
+            showError("Bạn đã là thành viên của nhóm " + item.id + ".");
+            return;
+        }
+        try {
+            current.requestJoinGroup(item.id);
+        } catch (IOException | RuntimeException e) {
+            String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+            showError("Không gửi được yêu cầu tham gia nhóm: " + reason);
+            return;
+        }
+        appendLog("[Hệ thống] Đã gửi yêu cầu tham gia nhóm " + item.id
+                + ". Vui lòng chờ trưởng nhóm duyệt.");
+        updateGroupControls();
+    }
+
+    /**
+     * Duyệt hoặc từ chối yêu cầu tham gia đang chọn ở tab "Yêu cầu duyệt".
+     */
+    private void resolveSelectedJoinRequest(boolean accept) {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            showError("Chưa kết nối tới server. Hãy bấm Kết nối trước.");
+            return;
+        }
+        JoinRequestItem item = joinRequestList.getSelectedValue();
+        if (item == null) {
+            showError("Hãy chọn một yêu cầu trong danh sách chờ duyệt.");
+            return;
+        }
+        try {
+            if (accept) {
+                current.approveGroupJoin(item.groupId, item.clientName);
+            } else {
+                current.refuseGroupJoin(item.groupId, item.clientName);
+            }
+        } catch (IOException | RuntimeException e) {
+            String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+            showError("Không xử lý được yêu cầu: " + reason);
+        }
+    }
+
+    /**
+     * Trưởng nhóm thêm trực tiếp một client đang online vào nhóm hiện tại.
+     */
+    private void addMemberToCurrentGroup() {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            showError("Chưa kết nối tới server. Hãy bấm Kết nối trước.");
+            return;
+        }
+        String groupId = currentGroupId;
+        if (groupId == null) {
+            showError("Hãy chọn một nhóm trước.");
+            return;
+        }
+        if (!canManageCurrentGroup()) {
+            showError("Chỉ trưởng nhóm của " + groupId + " mới được thêm thành viên.");
+            return;
+        }
+        Set<String> members = groupMembers.getOrDefault(groupId, Set.of());
+        List<String> candidates = new ArrayList<>();
+        for (String user : onlineUsers) {
+            if (!members.contains(user)) {
+                candidates.add(user);
+            }
+        }
+        if (candidates.isEmpty()) {
+            showError("Không còn client nào đang online để thêm vào nhóm.");
+            return;
+        }
+        DefaultListModel<String> model = new DefaultListModel<>();
+        for (String user : candidates) {
+            model.addElement(user);
+        }
+        JList<String> picker = new JList<>(model);
+        picker.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        picker.setVisibleRowCount(8);
+
+        JPanel panel = new JPanel(new BorderLayout(0, 6));
+        panel.add(new JLabel("Chọn client cần thêm vào nhóm " + groupId + ":"), BorderLayout.NORTH);
+        panel.add(new JScrollPane(picker), BorderLayout.CENTER);
+
+        int choice = JOptionPane.showConfirmDialog(this, panel, "Thêm thành viên",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) {
+            return;
+        }
+        for (String user : picker.getSelectedValuesList()) {
+            try {
+                current.addGroupMember(groupId, user);
+            } catch (IOException | RuntimeException e) {
+                String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+                showError("Không thêm được " + user + " vào nhóm: " + reason);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Trưởng nhóm xóa một thành viên khỏi nhóm hiện tại.
+     */
+    private void removeMemberFromCurrentGroup() {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            showError("Chưa kết nối tới server. Hãy bấm Kết nối trước.");
+            return;
+        }
+        String groupId = currentGroupId;
+        if (groupId == null) {
+            showError("Hãy chọn một nhóm trước.");
+            return;
+        }
+        if (!canManageCurrentGroup()) {
+            showError("Chỉ trưởng nhóm của " + groupId + " mới được xóa thành viên.");
+            return;
+        }
+        Set<String> members = groupMembers.getOrDefault(groupId, Set.of());
+        List<String> candidates = new ArrayList<>();
+        for (String member : members) {
+            if (!member.equals(clientName)) {
+                candidates.add(member);
+            }
+        }
+        if (candidates.isEmpty()) {
+            showError("Nhóm " + groupId + " không còn thành viên nào khác để xóa.");
+            return;
+        }
+        String member = (String) JOptionPane.showInputDialog(this,
+                "Chọn thành viên cần xóa khỏi nhóm " + groupId + ":",
+                "Xóa thành viên", JOptionPane.QUESTION_MESSAGE, null,
+                candidates.toArray(), candidates.get(0));
+        if (member == null) {
+            return;
+        }
+        int confirm = JOptionPane.showConfirmDialog(this,
+                "Xóa " + member + " khỏi nhóm " + groupId + "?", "Xác nhận xóa thành viên",
+                JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE);
+        if (confirm != JOptionPane.YES_OPTION) {
+            return;
+        }
+        try {
+            current.removeGroupMember(groupId, member);
+        } catch (IOException | RuntimeException e) {
+            String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+            showError("Không xóa được thành viên: " + reason);
+        }
+    }
+
+    /**
+     * Trưởng nhóm đổi tên nhóm hiện tại.
+     */
+    private void renameCurrentGroup() {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            showError("Chưa kết nối tới server. Hãy bấm Kết nối trước.");
+            return;
+        }
+        String groupId = currentGroupId;
+        if (groupId == null) {
+            showError("Hãy chọn một nhóm trước.");
+            return;
+        }
+        if (!canManageCurrentGroup()) {
+            showError("Chỉ trưởng nhóm của " + groupId + " mới được đổi tên nhóm.");
+            return;
+        }
+        GroupSummary summary = allGroups.get(groupId);
+        String currentName = (summary != null && summary.getName() != null
+                && !summary.getName().isBlank()) ? summary.getName() : groupId;
+        String input = JOptionPane.showInputDialog(this,
+                "Nhập tên mới cho nhóm " + groupId + " (tối đa "
+                        + Protocol.MAX_GROUP_NAME_LENGTH + " ký tự):", currentName);
+        if (input == null) {
+            return;
+        }
+        String newName = input.trim();
+        if (newName.isEmpty()) {
+            showError("Tên nhóm không được để trống.");
+            return;
+        }
+        if (newName.length() > Protocol.MAX_GROUP_NAME_LENGTH) {
+            showError("Tên nhóm tối đa " + Protocol.MAX_GROUP_NAME_LENGTH + " ký tự.");
+            return;
+        }
+        try {
+            current.renameGroup(groupId, newName);
+        } catch (IOException | RuntimeException e) {
+            String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+            showError("Không đổi tên được nhóm: " + reason);
+        }
+    }
+
+    /**
+     * Trưởng nhóm xóa hẳn nhóm hiện tại.
+     */
+    private void deleteCurrentGroup() {
+        ChatClient current = client;
+        if (current == null || !current.isConnected()) {
+            showError("Chưa kết nối tới server. Hãy bấm Kết nối trước.");
+            return;
+        }
+        String groupId = currentGroupId;
+        if (groupId == null) {
+            showError("Hãy chọn một nhóm trước.");
+            return;
+        }
+        if (!canManageCurrentGroup()) {
+            showError("Chỉ trưởng nhóm của " + groupId + " mới được xóa nhóm.");
+            return;
+        }
+        int choice = JOptionPane.showConfirmDialog(this,
+                "Xóa hẳn nhóm " + groupId + "? Mọi thành viên sẽ bị mời ra khỏi nhóm.",
+                "Xóa nhóm", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (choice != JOptionPane.YES_OPTION) {
+            return;
+        }
+        try {
+            current.deleteGroupAsOwner(groupId);
+        } catch (IOException | RuntimeException e) {
+            String reason = (e.getMessage() != null) ? e.getMessage() : e.getClass().getSimpleName();
+            showError("Không xóa được nhóm: " + reason);
+        }
+    }
+
+    /**
+     * @return {@code true} nếu client này là trưởng nhóm của nhóm đang chọn
+     */
+    private boolean canManageCurrentGroup() {
+        return currentGroupId != null && isOwnerOf(currentGroupId);
+    }
+
+    /**
+     * @param groupId mã nhóm
+     * @return {@code true} nếu client này là trưởng nhóm của {@code groupId}
+     */
+    private boolean isOwnerOf(String groupId) {
+        GroupSummary summary = allGroups.get(groupId);
+        return summary != null && summary.isOwnedBy(clientName);
+    }
+
     private void onPrivateTargetSelected() {
         String target = onlineList.getSelectedValue();
         if (target == null) {
@@ -790,6 +1338,7 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         renderHistory(groupArea, groupHistory.get(item.id));
         updateGroupHeader();
         updateGroupInputState();
+        updateGroupControls();
         updateTabTitles();
         groupInput.requestFocusInWindow();
     }
@@ -832,7 +1381,7 @@ public class ClientFrame extends JFrame implements ChatClientListener {
     }
 
     private void updateGroupItem(String groupId, int memberCount) {
-        GroupItem updated = new GroupItem(groupId, memberCount);
+        GroupItem updated = new GroupItem(groupId, groupLabel(groupId), memberCount);
         int index = indexOfGroup(groupId);
         if (index >= 0) {
             groupModel.setElementAt(updated, index);
@@ -867,10 +1416,40 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         }
         Set<String> members = groupMembers.get(currentGroupId);
         int count = (members != null) ? members.size() : 0;
-        groupHeader.setText("Nhóm " + currentGroupId + " (" + count + " thành viên)");
+        GroupSummary summary = allGroups.get(currentGroupId);
+        String label = (summary != null) ? labelOf(summary) : currentGroupId;
+        String owner = (summary != null) ? summary.getOwner() : "";
+        boolean leader = isOwnerOf(currentGroupId);
+        StringBuilder text = new StringBuilder("Nhóm ").append(label)
+                .append(" (").append(count).append(" thành viên)");
+        if (!owner.isBlank()) {
+            text.append(leader ? " - bạn là trưởng nhóm" : " - trưởng nhóm: " + owner);
+        }
+        groupHeader.setText(text.toString());
         groupHeader.setToolTipText((members != null && !members.isEmpty())
                 ? "Thành viên: " + String.join(", ", members)
                 : null);
+    }
+
+    /**
+     * Bật/tắt nút "Xin vào nhóm", "Duyệt"/"Từ chối" và các nút dành cho trưởng nhóm.
+     */
+    private void updateGroupControls() {
+        boolean connected = client != null && client.isConnected();
+
+        GroupItem selectedAll = allGroupList.getSelectedValue();
+        joinGroupButton.setEnabled(connected && selectedAll != null
+                && !groupMembers.containsKey(selectedAll.id));
+
+        JoinRequestItem selectedRequest = joinRequestList.getSelectedValue();
+        approveJoinButton.setEnabled(connected && selectedRequest != null);
+        refuseJoinButton.setEnabled(connected && selectedRequest != null);
+
+        boolean leader = connected && canManageCurrentGroup();
+        addMemberButton.setEnabled(leader);
+        kickMemberButton.setEnabled(leader);
+        renameGroupButton.setEnabled(leader);
+        deleteGroupButton.setEnabled(leader);
     }
 
     private void updateGroupInputState() {
@@ -897,6 +1476,7 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         leaveGroupButton.setEnabled(connected && currentGroupId != null);
         updatePrivateInputState();
         updateGroupInputState();
+        updateGroupControls();
     }
 
     private void clearSessionState() {
@@ -913,14 +1493,20 @@ public class ClientFrame extends JFrame implements ChatClientListener {
         groupHistory.clear();
         groupUnread.clear();
         groupModel.clear();
+        allGroups.clear();
+        allGroupModel.clear();
+        pendingJoinRequests.clear();
+        joinRequestModel.clear();
         currentGroupId = null;
         groupArea.setText("");
         groupInput.setText("");
         groupHeader.setText("Chưa có nhóm nào");
         groupHeader.setToolTipText(null);
+        updateJoinRequestsTab();
         updateTabTitles();
         updatePrivateInputState();
         updateGroupInputState();
+        updateGroupControls();
     }
 
     private void updateTabTitles() {

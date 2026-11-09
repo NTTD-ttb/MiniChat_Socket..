@@ -8,6 +8,8 @@ Giai đoạn 3 giữ nguyên **phòng chat chung** của giai đoạn 2 và bổ
 - **Chat riêng 1-1**: chỉ người gửi, người nhận và Server thấy nội dung.
 - **Chat nhóm**: nhóm được tạo khi có **ít nhất 3 thành viên**; chỉ các thành viên
   của nhóm nhận được tin nhắn nhóm.
+- **Quản lý nhóm phía client**: trưởng nhóm duyệt/từ chối yêu cầu xin vào nhóm,
+  thêm/xóa thành viên, đổi tên và xóa nhóm ngay trên tab **Nhóm**.
 - **Danh sách client đang online** (`USERS`) để chọn người chat riêng.
 - Thông báo lỗi có mã (`ERR|code|message`) khi yêu cầu không hợp lệ.
 - Server ghi nhật ký nội dung tin nhắn (yêu cầu của đề: Server thấy được tin nhắn).
@@ -22,7 +24,9 @@ Giai đoạn 3 giữ nguyên **phòng chat chung** của giai đoạn 2 và bổ
 
 Ngoài phần chat, giao diện **Server** còn có hai tab quản trị: **Người dùng** (danh sách
 client đã được duyệt kèm `ip:port`, nút **Ngắt kết nối**) và **Nhóm** (xem nhóm cùng thành
-viên, **Thêm thành viên**, **Xóa thành viên**, **Đổi tên nhóm**, **Xóa nhóm**).
+viên, **Thêm thành viên**, **Xóa thành viên**, **Đổi tên nhóm**, **Xóa nhóm**). Client
+cũng có tab **Nhóm** với hai mục **Nhóm của bạn** / **Tất cả nhóm**, tab **Yêu cầu vào
+nhóm** (trưởng nhóm duyệt/từ chối) và các nút quản lý nhóm dành cho trưởng nhóm.
 
 ## 2. Quy tắc chat riêng và chat nhóm
 
@@ -45,12 +49,22 @@ viên, **Thêm thành viên**, **Xóa thành viên**, **Đổi tên nhóm**, **X
 - Chỉ thành viên nhóm nhận được `GMSG`; người ngoài gửi vào nhóm bị từ chối
   (`ERR|NOT_MEMBER`) và không ai trong nhóm nhận được nội dung đó.
 - Giới hạn hiện tại: tối đa **20 thành viên/nhóm**, tối đa **10 nhóm/client**.
-- Người tạo nhóm (`owner`) chỉ dùng để ghi nhật ký, không có quyền đặc biệt.
-- Quản trị viên Server quản lý nhóm ở tab **Nhóm**: thêm/xóa thành viên, đổi tên nhóm
-  (tối đa 40 ký tự) và xóa nhóm. Client được thêm nhận `GROUP|mã-nhóm|ds-thành-viên`;
+- **Trưởng nhóm** (`owner`) là người tạo nhóm; khi trưởng nhóm rời nhóm, bị xóa hay mất
+  kết nối thì quyền được chuyển cho thành viên còn lại đầu tiên. Chỉ trưởng nhóm được
+  thêm/xóa thành viên, đổi tên và xóa nhóm (`ERR|NOT_OWNER` nếu người khác thử).
+- **Xin vào nhóm**: client chọn một nhóm trong **Tất cả nhóm** rồi bấm **Xin vào nhóm**;
+  Server ghi yêu cầu và đẩy danh sách chờ duyệt (`GJREQ`) cho trưởng nhóm. Trưởng nhóm
+  bấm **Duyệt** (`GAPPROVE`) hoặc **Từ chối** (`GREFUSE`); người xin nhận `GJOINRES`.
+  Xin lại khi đang chờ bị từ chối (`ERR|JOIN_PENDING`), duyệt yêu cầu không tồn tại bị
+  từ chối (`ERR|NO_JOIN_REQUEST`), xin vào nhóm đã là thành viên bị từ chối
+  (`ERR|ALREADY_MEMBER`).
+- Quản trị viên Server vẫn quản lý được mọi nhóm ở tab **Nhóm**: thêm/xóa thành viên, đổi
+  tên nhóm (tối đa 40 ký tự) và xóa nhóm. Client được thêm nhận `GROUP|mã-nhóm|ds-thành-viên`;
   client bị xóa khỏi nhóm nhận `GDEL` và nhóm biến mất khỏi danh sách của mình; khi nhóm
   bị xóa, mọi thành viên nhận `GDEL`. Tên nhóm do Server giữ (mặc định
-  `Nhóm của Client-N`), phía client chỉ nhận thông báo `SYS` khi tên thay đổi.
+  `Nhóm của Client-N`) và được gửi cho client qua ảnh chụp `GALL`.
+- Sau mỗi thay đổi (tạo/duyệt/xóa thành viên/đổi tên/xóa nhóm) Server phát lại ảnh chụp
+  `GALL`…`GALL_END` cho toàn bộ client nên danh sách nhóm ở mọi cửa sổ luôn đồng bộ.
 - Lịch sử nhóm được giữ theo từng nhóm trong phiên (tối đa 300 dòng).
 
 ## 3. Cấu trúc project
@@ -60,7 +74,8 @@ D:\PTUNDHV\Minichat_ok\
 ├── src\
 │   └── minichat_ok\
 │       ├── common\
-│       │   └── Protocol.java           # Hằng số + dựng/phân tích dòng giao thức
+│       │   ├── Protocol.java           # Hằng số + dựng/phân tích dòng giao thức
+│       │   └── GroupSummary.java       # Ảnh chụp nhóm phía client (id, tên, trưởng, thành viên)
 │       ├── server\
 │       │   ├── ChatServer.java         # ServerSocket, registry client, DM, nhóm, broadcast
 │       │   ├── ClientHandler.java      # Đọc/ghi dữ liệu và xử lý lệnh của 1 client
@@ -120,6 +135,12 @@ liệt kê mọi nhóm trên Server; chọn nhóm để xem thành viên và dù
 (chọn trong danh sách client đang online), **Xóa thành viên**, **Đổi tên nhóm**,
 **Xóa nhóm**. Mọi thay đổi được đẩy ngay sang client liên quan.
 
+Ở cửa sổ **Client**, tab **Nhóm** gồm hai mục: **Nhóm của bạn** (nhóm đang tham gia, bấm
+để mở cửa sổ chat nhóm) và **Tất cả nhóm** (mọi nhóm trên Server, kèm nút **Xin vào
+nhóm**). Tab **Yêu cầu vào nhóm** liệt kê người xin vào các nhóm mình làm trưởng nhóm với
+hai nút **Duyệt** / **Từ chối**; các nút **Thêm thành viên**, **Xóa thành viên**, **Đổi
+tên nhóm**, **Xóa nhóm** chỉ bật khi client đang là trưởng nhóm của nhóm được chọn.
+
 ### Kịch bản kiểm thử nhanh
 
 1. **Phòng chung**: ở tab **Phòng chung**, gửi `xin chào` → cả 3 client đều thấy.
@@ -128,11 +149,19 @@ liệt kê mọi nhóm trên Server; chọn nhóm để xem thành viên và dù
 3. **Tạo nhóm**: Client-1 mở tab **Nhóm** → **Tạo nhóm** → chọn `Client-2` và
    `Client-3` → cả 3 nhận nhóm `G1`.
 4. **Chat nhóm**: Client-2 gửi tin trong nhóm `G1` → Client-1 và Client-3 thấy.
-5. **Rời nhóm**: Client-3 bấm **Rời nhóm** → Client-1 và Client-2 nhận thông báo
-   `Client-3 đã rời nhóm`; Client-1 và Client-2 vẫn chat nhóm bình thường.
-6. **Nhóm rỗng**: Client-2 rời nhóm, Client-1 gửi tin vẫn nhận echo; Client-1
+5. **Xin vào nhóm**: mở thêm Client-4, ở **Tất cả nhóm** chọn `G1` → **Xin vào nhóm**;
+   Client-1 (trưởng nhóm) thấy `Client-4` ở tab **Yêu cầu vào nhóm** → **Duyệt** →
+   Client-4 nhận `GJOINRES` và nhóm `G1` xuất hiện trong **Nhóm của bạn**.
+   Bấm **Từ chối** thay vì **Duyệt** thì Client-4 nhận thông báo bị từ chối.
+6. **Trưởng nhóm quản lý nhóm**: Client-1 chọn `G1` → **Thêm thành viên**,
+   **Đổi tên nhóm** (ví dụ `Team Alpha`), **Xóa thành viên** → mọi client thấy danh sách
+   nhóm cập nhật; client bị xóa nhận `GDEL`.
+7. **Rời nhóm**: Client-3 bấm **Rời nhóm** → Client-1 và Client-2 nhận thông báo
+   `Client-3 đã rời nhóm`; Client-1 và Client-2 vẫn chat nhóm bình thường. Nếu chính
+   trưởng nhóm rời nhóm, quyền trưởng nhóm chuyển cho thành viên còn lại đầu tiên.
+8. **Nhóm rỗng**: Client-2 rời nhóm, Client-1 gửi tin vẫn nhận echo; Client-1
    ngắt kết nối → Server tự xóa nhóm, số nhóm về 0.
-7. **Quản trị từ Server**: tab **Người dùng** → chọn `Client-3` → **Ngắt kết nối** →
+9. **Quản trị từ Server**: tab **Người dùng** → chọn `Client-3` → **Ngắt kết nối** →
    Client-3 nhận thông báo và bị đóng kết nối; tab **Nhóm** → chọn `G1` → **Thêm thành
    viên** (Client-3 kết nối lại trước), **Đổi tên nhóm**, **Xóa thành viên**, **Xóa nhóm**
    → các client liên quan nhận `GROUP`/`GLEFT`/`GDEL`/`SYS` tương ứng.
@@ -149,12 +178,21 @@ liệt kê mọi nhóm trên Server; chọn nhóm để xem thành viên và dù
 | `GROUP_CREATE\|ds-thành-viên` | Tạo nhóm; danh sách phân tách bằng dấu phẩy, không gồm người tạo |
 | `GMSG\|mã-nhóm\|nội dung` | Tin nhắn nhóm |
 | `GLEAVE\|mã-nhóm` | Rời nhóm |
+| `GROUPS` | Yêu cầu ảnh chụp danh sách toàn bộ nhóm (`GALL`…`GALL_END`) |
+| `GJOIN\|mã-nhóm` | Xin vào nhóm; Server chuyển yêu cầu cho trưởng nhóm duyệt |
+| `GAPPROVE\|mã-nhóm\|tên` | Trưởng nhóm duyệt yêu cầu vào nhóm |
+| `GREFUSE\|mã-nhóm\|tên` | Trưởng nhóm từ chối yêu cầu vào nhóm |
+| `GADD\|mã-nhóm\|tên` | Trưởng nhóm thêm thành viên |
+| `GKICK\|mã-nhóm\|tên` | Trưởng nhóm xóa thành viên |
+| `GRENAME\|mã-nhóm\|tên-mới` | Trưởng nhóm đổi tên nhóm (tối đa 40 ký tự) |
+| `GDELETE\|mã-nhóm` | Trưởng nhóm xóa hẳn nhóm |
 | `USERS` | Yêu cầu danh sách client đang online |
 | dòng không có `\|` | Tương thích giai đoạn 1: coi là tin nhắn phòng chung |
 
 Các loại do Server sinh ra (`JOIN_OK`, `JOIN_DENY`, `NAME`, `SYS`, `GROUP`,
-`GLEFT`, `GDEL`, `ERR`) nếu client tự gửi lên sẽ bị bỏ qua. Tiền tố lạ có chứa `|` bị từ
-chối bằng `ERR|BAD_REQUEST` để tránh nội dung riêng bị phát nhầm vào phòng chung.
+`GLEFT`, `GDEL`, `GJOINRES`, `GALL`, `GJREQ`, `ERR`) nếu client tự gửi lên sẽ bị bỏ qua.
+Tiền tố lạ có chứa `|` bị từ chối bằng `ERR|BAD_REQUEST` để tránh nội dung riêng bị phát
+nhầm vào phòng chung.
 
 ### Server → Client
 
@@ -171,13 +209,19 @@ chối bằng `ERR|BAD_REQUEST` để tránh nội dung riêng bị phát nhầm
 | `GMSG\|mã-nhóm\|người-gửi\|nội dung` | Tin nhắn nhóm gửi cho các thành viên |
 | `GLEFT\|mã-nhóm\|tên\|lý-do` | Một thành viên đã rời nhóm hoặc mất kết nối |
 | `GDEL\|mã-nhóm\|lý-do` | Nhóm bị xóa hoặc client bị xóa khỏi nhóm; client loại nhóm khỏi danh sách |
+| `GJOINRES\|mã-nhóm\|OK\|DENY\|thông-điệp` | Kết quả yêu cầu xin vào nhóm (`OK` = được duyệt, `DENY` = bị từ chối) |
+| `GALL\|mã-nhóm\|trưởng-nhóm\|ds-thành-viên\|tên-nhóm` | Một dòng trong ảnh chụp danh sách toàn bộ nhóm (tên nhóm giữ nguyên cả khi có `\|`) |
+| `GALL_END` | Kết thúc ảnh chụp danh sách nhóm (client thay toàn bộ danh sách) |
+| `GJREQ\|mã-nhóm\|ds-người-xin` | Danh sách chờ duyệt của một nhóm do client làm trưởng nhóm |
+| `GJREQ_END` | Kết thúc ảnh chụp danh sách chờ duyệt |
 | `ERR\|mã-lỗi\|thông-điệp` | Yêu cầu bị từ chối |
 
 ### Mã lỗi
 
 `TARGET_NOT_FOUND`, `SELF_TARGET`, `UNKNOWN_MEMBER`, `GROUP_TOO_SMALL`,
 `GROUP_TOO_LARGE`, `GROUP_NOT_FOUND`, `NOT_MEMBER`, `TOO_MANY_GROUPS`,
-`MESSAGE_TOO_LONG`, `BAD_REQUEST`, `KICKED`.
+`MESSAGE_TOO_LONG`, `BAD_REQUEST`, `KICKED`, `NOT_OWNER`, `ALREADY_MEMBER`,
+`JOIN_PENDING`, `NO_JOIN_REQUEST`.
 
 ### Luồng chấp nhận kết nối
 
@@ -230,6 +274,17 @@ Bộ kiểm thử quản trị (chạy cùng mã nguồn, không cần thao tác
 - `TestServerFrameE2E` (Swing) vẫn đạt: duyệt/chặn qua nút trong tab **Chờ duyệt** →
   `UI TEST OK`.
 
+Bộ kiểm thử quản lý nhóm phía client (headless, 4 client raw + `ChatServer` thật):
+
+- tạo nhóm 3 người, mọi client nhận ảnh chụp `GALL` và thấy nhóm mới;
+- client thứ tư gửi `GJOIN`, trưởng nhóm nhận `GJREQ`, duyệt bằng `GAPPROVE` → người
+  xin nhận `GJOINRES` và thấy mình trong nhóm;
+- đổi tên nhóm bằng `GRENAME` → các thành viên thấy tên mới trong `GALL`;
+- trưởng nhóm `GKICK` → người bị xóa nhận `GDEL` và không còn trong nhóm;
+- xin vào lại rồi bị `GREFUSE` → nhận `GJOINRES` từ chối;
+- các trường hợp lỗi `ALREADY_MEMBER`, `NOT_OWNER` trả đúng mã;
+- `GDELETE` → danh sách nhóm của mọi client trống → `TẤT CẢ KIỂM TRA QUẢN LÝ NHÓM ĐỀU ĐẠT`.
+
 ## 8. Ghi chú kỹ thuật
 
 - Giao thức văn bản thuần UTF-8, mỗi tin là một dòng kết thúc bằng đúng `\n`
@@ -240,7 +295,16 @@ Bộ kiểm thử quản trị (chạy cùng mã nguồn, không cần thao tác
   để các client nhận tin **cùng thứ tự**; mỗi `ClientHandler` có khóa riêng bảo vệ
   `PrintWriter`.
 - Nhóm lưu trong `ConcurrentHashMap<String, Group>`; `Group` dùng
-  `CopyOnWriteArraySet` cho thành viên nên vừa phát tin vừa rời nhóm an toàn.
+  `CopyOnWriteArraySet` cho thành viên nên vừa phát tin vừa rời nhóm an toàn, đồng thời
+  giữ `owner` (có thể đổi khi trưởng nhóm rời nhóm) và tập `joinRequests`.
+- Danh sách nhóm phía client dùng giao thức ảnh chụp: Server gửi `GALL|mã|trưởng|ds|tên`
+  cho từng nhóm rồi `GALL_END`; client chỉ thay danh sách khi gặp `GALL_END` nên không bị
+  trạng thái nửa vời. Tên nhóm có thể chứa `|` nên client phân tích bằng
+  `Protocol.fields(line, 5)`; `GJREQ`…`GJREQ_END` hoạt động tương tự cho danh sách chờ duyệt.
+- Luồng xin vào nhóm: `GJOIN` → `ChatServer.requestJoinGroup` kiểm tra nhóm/tồn tại/đã là
+  thành viên/đang chờ rồi lưu yêu cầu và đẩy `GJREQ` cho trưởng nhóm; `GAPPROVE` gọi lại
+  `addMemberInternal` (dùng chung với tab quản trị Server) nên mọi ràng buộc về số thành
+  viên/giới hạn nhóm vẫn được áp dụng.
 - `ChatServer.createGroup` kiểm tra lại toàn bộ phía Server: thành viên tồn tại,
   số lượng tối thiểu/tối đa, giới hạn số nhóm của người tạo. Client chỉ kiểm tra
   sơ bộ để báo lỗi sớm.
@@ -272,10 +336,10 @@ Bộ kiểm thử quản trị (chạy cùng mã nguồn, không cần thao tác
   **Duyệt** thì client mới vào phòng chung (hoặc bật `setAutoApproveJoins(true)`).
 - Không lưu lịch sử ra đĩa: đóng ứng dụng là mất; client vào sau chỉ thấy tin từ
   lúc mình tham gia.
-- Chưa hỗ trợ chuyển quyền owner hay phân quyền quản trị cho client; mọi thao tác
-  thêm/xóa thành viên, đổi tên và xóa nhóm chỉ làm được từ cửa sổ Server.
-- Tên nhóm chỉ lưu phía Server (giao diện quản trị); client hiển thị mã nhóm và nhận
-  thông báo `SYS` khi tên thay đổi, chưa hiển thị tên nhóm trong danh sách của mình.
+- Quyền trưởng nhóm chuyển tự động cho thành viên còn lại đầu tiên, chưa có chức năng
+  “chuyển quyền” chủ động; quản trị viên Server vẫn thao tác được mọi nhóm.
+- Yêu cầu vào nhóm không được lưu cùng nhóm khi Server khởi động lại (toàn bộ nhóm cũng
+  mất), và không có thông báo cho trưởng nhóm khi họ ngoại tuyến.
 - Một client “treo” (kết nối nhưng không đọc dữ liệu) có thể làm luồng phát tin phải
   chờ khi bộ đệm TCP đầy. Hướng nâng cấp: hàng đợi gửi riêng cho từng client kèm
   `ExecutorService` để cô lập hoàn toàn.
@@ -293,5 +357,8 @@ Bộ kiểm thử quản trị (chạy cùng mã nguồn, không cần thao tác
 | Nút **Tạo nhóm** báo thiếu thành viên | Chưa đủ 3 client online | Mở thêm client, đảm bảo có ít nhất 3 người |
 | Client-3 không thấy tin nhắn riêng/nhóm | Đúng thiết kế: chỉ người liên quan/thành viên nhận | Không cần xử lý |
 | Không thấy nhóm sau khi tạo | Chưa bấm **Tạo nhóm** hoặc chọn thiếu người | Chọn ít nhất 2 client khác rồi xác nhận |
+| Nút **Xin vào nhóm** báo `JOIN_PENDING` | Đã gửi yêu cầu và đang chờ trưởng nhóm duyệt | Chờ trưởng nhóm **Duyệt**/**Từ chối** |
+| **Duyệt** báo `NO_JOIN_REQUEST` | Người đó đã hủy yêu cầu hoặc yêu cầu đã được xử lý | Tải lại tab **Yêu cầu vào nhóm** |
+| Nút quản lý nhóm bị mờ | Client không phải trưởng nhóm của nhóm đang chọn | Chỉ trưởng nhóm (hoặc Server) được thêm/xóa/đổi tên/xóa nhóm |
 | Đã sửa code nhưng chạy vẫn như cũ | Chưa biên dịch lại | Chạy lại `javac` hoặc nút Run của VS Code |
  #alo

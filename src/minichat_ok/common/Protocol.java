@@ -91,6 +91,48 @@ public final class Protocol {
      */
     public static final String TYPE_GROUP_DELETE = "GDEL";
 
+    /** Loại dòng Client yêu cầu tham gia một nhóm (Client gửi lên). */
+    public static final String TYPE_GROUP_JOIN = "GJOIN";
+
+    /** Loại dòng Server thông báo kết quả duyệt/từ chối yêu cầu tham gia nhóm. */
+    public static final String TYPE_GROUP_JOIN_RESULT = "GJOINRES";
+
+    /**
+     * Loại dòng Server gửi một nhóm trong ảnh chụp danh sách toàn bộ nhóm.
+     * Các dòng {@code GALL} liên tiếp được đóng lại bằng {@link #TYPE_GROUP_LIST_END}.
+     */
+    public static final String TYPE_GROUP_LIST_ITEM = "GALL";
+
+    /** Loại dòng kết thúc ảnh chụp danh sách nhóm. */
+    public static final String TYPE_GROUP_LIST_END = "GALL_END";
+
+    /** Loại dòng Server gửi danh sách yêu cầu chờ duyệt của một nhóm cho trưởng nhóm. */
+    public static final String TYPE_GROUP_REQUESTS_ITEM = "GJREQ";
+
+    /** Loại dòng kết thúc ảnh chụp danh sách yêu cầu chờ duyệt. */
+    public static final String TYPE_GROUP_REQUESTS_END = "GJREQ_END";
+
+    /** Loại dòng yêu cầu danh sách nhóm hiện có (Client gửi lên, giống {@code USERS}). */
+    public static final String TYPE_GROUP_LIST_REQUEST = "GROUPS";
+
+    /** Loại dòng trưởng nhóm duyệt một yêu cầu tham gia (Client gửi lên). */
+    public static final String TYPE_GROUP_APPROVE = "GAPPROVE";
+
+    /** Loại dòng trưởng nhóm từ chối một yêu cầu tham gia (Client gửi lên). */
+    public static final String TYPE_GROUP_REFUSE = "GREFUSE";
+
+    /** Loại dòng trưởng nhóm thêm trực tiếp một client vào nhóm (Client gửi lên). */
+    public static final String TYPE_GROUP_ADD_MEMBER = "GADD";
+
+    /** Loại dòng trưởng nhóm xóa một thành viên khỏi nhóm (Client gửi lên). */
+    public static final String TYPE_GROUP_KICK_MEMBER = "GKICK";
+
+    /** Loại dòng trưởng nhóm đổi tên nhóm (Client gửi lên). */
+    public static final String TYPE_GROUP_RENAME = "GRENAME";
+
+    /** Loại dòng trưởng nhóm xóa hẳn nhóm (Client gửi lên). */
+    public static final String TYPE_GROUP_DESTROY = "GDELETE";
+
     /** Loại dòng báo lỗi/yêu cầu bị từ chối. */
     public static final String TYPE_ERROR = "ERR";
 
@@ -138,6 +180,21 @@ public final class Protocol {
 
     /** Mã lỗi: quản trị viên Server chủ động ngắt kết nối của client. */
     public static final String ERROR_KICKED = "KICKED";
+
+    /** Mã lỗi: client không phải trưởng nhóm nên không được quản lý nhóm. */
+    public static final String ERROR_NOT_OWNER = "NOT_OWNER";
+
+    /** Mã lỗi: client đã là thành viên của nhóm. */
+    public static final String ERROR_ALREADY_MEMBER = "ALREADY_MEMBER";
+
+    /** Mã lỗi: yêu cầu tham gia nhóm đang chờ trưởng nhóm duyệt. */
+    public static final String ERROR_JOIN_PENDING = "JOIN_PENDING";
+
+    /** Mã lỗi: không có yêu cầu tham gia nhóm tương ứng để duyệt/từ chối. */
+    public static final String ERROR_NO_JOIN_REQUEST = "NO_JOIN_REQUEST";
+
+    /** Độ dài tối đa của tên nhóm (ký tự), cả Server và Client đều kiểm tra. */
+    public static final int MAX_GROUP_NAME_LENGTH = 40;
 
     /** Độ dài tối đa của nội dung một tin nhắn (ký tự). */
     public static final int MAX_MESSAGE_LENGTH = 4000;
@@ -301,6 +358,144 @@ public final class Protocol {
      */
     public static String groupDeletedMessage(String groupId, String reason) {
         return TYPE_GROUP_DELETE + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(reason);
+    }
+
+    /**
+     * Tạo dòng yêu cầu tham gia một nhóm (Client gửi lên Server).
+     *
+     * @param groupId mã nhóm
+     * @return dòng dạng {@code GJOIN|G1}
+     */
+    public static String groupJoinRequestMessage(String groupId) {
+        return TYPE_GROUP_JOIN + SEPARATOR + sanitize(groupId);
+    }
+
+    /**
+     * Tạo dòng thông báo kết quả duyệt/từ chối yêu cầu tham gia nhóm (Server gửi xuống).
+     *
+     * @param groupId  mã nhóm
+     * @param accepted {@code true} nếu trưởng nhóm đã duyệt
+     * @param message  thông điệp tiếng Việt cho người dùng
+     * @return dòng dạng {@code GJOINRES|G1|OK|Bạn đã được duyệt vào nhóm G1.}
+     */
+    public static String groupJoinResultMessage(String groupId, boolean accepted, String message) {
+        return TYPE_GROUP_JOIN_RESULT + SEPARATOR + sanitize(groupId) + SEPARATOR
+                + (accepted ? "OK" : "DENY") + SEPARATOR + sanitize(message);
+    }
+
+    /**
+     * Tạo một dòng trong ảnh chụp danh sách nhóm.
+     *
+     * <p>Tên nhóm là trường cuối cùng nên được phép chứa dấu {@code '|'}; phía nhận dùng
+     * {@link #fields(String, int)} với {@code limit = 5} để giữ nguyên phần tên.</p>
+     *
+     * @param groupId     mã nhóm
+     * @param owner       tên trưởng nhóm (người tạo nhóm)
+     * @param memberNames danh sách thành viên hiện tại
+     * @param name        tên hiển thị của nhóm
+     * @return dòng dạng {@code GALL|G1|Client-1|Client-1,Client-2|Nhóm của Client-1}
+     */
+    public static String groupListItemMessage(String groupId, String owner,
+                                              Collection<String> memberNames, String name) {
+        return TYPE_GROUP_LIST_ITEM + SEPARATOR + sanitize(groupId) + SEPARATOR
+                + sanitize(owner) + SEPARATOR + joinNames(memberNames) + SEPARATOR + sanitize(name);
+    }
+
+    /**
+     * Tạo dòng kết thúc ảnh chụp danh sách nhóm.
+     *
+     * @return dòng {@code GALL_END}
+     */
+    public static String groupListEndMessage() {
+        return TYPE_GROUP_LIST_END;
+    }
+
+    /**
+     * Tạo một dòng trong ảnh chụp danh sách yêu cầu chờ duyệt của một nhóm.
+     *
+     * @param groupId    mã nhóm
+     * @param requesters tên các client đang xin vào nhóm
+     * @return dòng dạng {@code GJREQ|G1|Client-4,Client-5}
+     */
+    public static String groupRequestsMessage(String groupId, Collection<String> requesters) {
+        return TYPE_GROUP_REQUESTS_ITEM + SEPARATOR + sanitize(groupId) + SEPARATOR
+                + joinNames(requesters);
+    }
+
+    /**
+     * Tạo dòng kết thúc ảnh chụp danh sách yêu cầu chờ duyệt.
+     *
+     * @return dòng {@code GJREQ_END}
+     */
+    public static String groupRequestsEndMessage() {
+        return TYPE_GROUP_REQUESTS_END;
+    }
+
+    /**
+     * Tạo dòng trưởng nhóm duyệt yêu cầu tham gia (Client gửi lên).
+     *
+     * @param groupId    mã nhóm
+     * @param clientName tên client đã gửi yêu cầu
+     * @return dòng dạng {@code GAPPROVE|G1|Client-4}
+     */
+    public static String groupApproveMessage(String groupId, String clientName) {
+        return TYPE_GROUP_APPROVE + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(clientName);
+    }
+
+    /**
+     * Tạo dòng trưởng nhóm từ chối yêu cầu tham gia (Client gửi lên).
+     *
+     * @param groupId    mã nhóm
+     * @param clientName tên client đã gửi yêu cầu
+     * @return dòng dạng {@code GREFUSE|G1|Client-4}
+     */
+    public static String groupRefuseMessage(String groupId, String clientName) {
+        return TYPE_GROUP_REFUSE + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(clientName);
+    }
+
+    /**
+     * Tạo dòng trưởng nhóm thêm trực tiếp một client vào nhóm (Client gửi lên).
+     *
+     * @param groupId    mã nhóm
+     * @param memberName tên client cần thêm
+     * @return dòng dạng {@code GADD|G1|Client-4}
+     */
+    public static String groupAddMemberMessage(String groupId, String memberName) {
+        return TYPE_GROUP_ADD_MEMBER + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(memberName);
+    }
+
+    /**
+     * Tạo dòng trưởng nhóm xóa một thành viên khỏi nhóm (Client gửi lên).
+     *
+     * @param groupId    mã nhóm
+     * @param memberName tên thành viên cần xóa
+     * @return dòng dạng {@code GKICK|G1|Client-4}
+     */
+    public static String groupKickMemberMessage(String groupId, String memberName) {
+        return TYPE_GROUP_KICK_MEMBER + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(memberName);
+    }
+
+    /**
+     * Tạo dòng trưởng nhóm đổi tên nhóm (Client gửi lên).
+     *
+     * <p>Tên nhóm là trường cuối cùng nên được phép chứa dấu {@code '|'}.</p>
+     *
+     * @param groupId mã nhóm
+     * @param newName tên mới
+     * @return dòng dạng {@code GRENAME|G1|Nhóm dự án}
+     */
+    public static String groupRenameMessage(String groupId, String newName) {
+        return TYPE_GROUP_RENAME + SEPARATOR + sanitize(groupId) + SEPARATOR + sanitize(newName);
+    }
+
+    /**
+     * Tạo dòng trưởng nhóm xóa hẳn nhóm (Client gửi lên).
+     *
+     * @param groupId mã nhóm
+     * @return dòng dạng {@code GDELETE|G1}
+     */
+    public static String groupDestroyMessage(String groupId) {
+        return TYPE_GROUP_DESTROY + SEPARATOR + sanitize(groupId);
     }
 
     /**

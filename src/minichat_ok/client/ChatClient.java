@@ -8,10 +8,14 @@ import java.io.PrintWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
+import minichat_ok.common.GroupSummary;
 import minichat_ok.common.Protocol;
 
 /**
@@ -41,6 +45,18 @@ public class ChatClient {
 
     /** Khóa báo kết quả duyệt (JOIN_OK / JOIN_DENY) từ luồng nhận dữ liệu. */
     private final Object joinLock = new Object();
+
+    /**
+     * Bộ đệm ghép các dòng {@code GALL} thành một ảnh chụp danh sách nhóm.
+     * Chỉ được dùng trên luồng nhận dữ liệu nên không cần đồng bộ.
+     */
+    private final List<GroupSummary> groupListBuffer = new ArrayList<>();
+
+    /**
+     * Bộ đệm ghép các dòng {@code GJREQ} (yêu cầu chờ duyệt theo nhóm).
+     * Chỉ được dùng trên luồng nhận dữ liệu nên không cần đồng bộ.
+     */
+    private final Map<String, List<String>> groupRequestBuffer = new LinkedHashMap<>();
 
     private volatile boolean connected;
     private volatile boolean intentionalDisconnect;
@@ -214,6 +230,9 @@ public class ChatClient {
         if (reader == null) {
             return;
         }
+        // Bỏ dữ liệu ghép dở của lần kết nối trước (nếu có).
+        groupListBuffer.clear();
+        groupRequestBuffer.clear();
         try {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -345,6 +364,42 @@ public class ChatClient {
                 String message = (parts.length >= 3) ? parts[2] : Protocol.payload(line);
                 listener.onError(code, message);
             }
+            case Protocol.TYPE_GROUP_JOIN_RESULT -> {
+                String[] parts = Protocol.fields(line, 4);
+                if (parts.length >= 4 && !parts[1].trim().isEmpty()) {
+                    listener.onGroupJoinResult(parts[1].trim(),
+                            "OK".equalsIgnoreCase(parts[2].trim()), parts[3]);
+                } else {
+                    listener.onSystemMessage("Dòng GJOINRES không hợp lệ: " + line);
+                }
+            }
+            case Protocol.TYPE_GROUP_LIST_ITEM -> {
+                // GALL|ma-nhom|truong-nhom|ds-thanh-vien|ten-nhom (tên nhóm là trường cuối).
+                String[] parts = Protocol.fields(line, 5);
+                if (parts.length >= 5 && !parts[1].trim().isEmpty()) {
+                    groupListBuffer.add(new GroupSummary(parts[1].trim(), parts[2].trim(),
+                            parts[4], Protocol.parseNameList(parts[3])));
+                }
+            }
+            case Protocol.TYPE_GROUP_LIST_END -> {
+                List<GroupSummary> snapshot = List.copyOf(groupListBuffer);
+                groupListBuffer.clear();
+                listener.onGroupList(snapshot);
+            }
+            case Protocol.TYPE_GROUP_REQUESTS_ITEM -> {
+                String[] parts = Protocol.fields(line, 3);
+                if (parts.length >= 3 && !parts[1].trim().isEmpty()) {
+                    groupRequestBuffer.put(parts[1].trim(), Protocol.parseNameList(parts[2]));
+                }
+            }
+            case Protocol.TYPE_GROUP_REQUESTS_END -> {
+                Map<String, List<String>> snapshot = new LinkedHashMap<>();
+                for (Map.Entry<String, List<String>> entry : groupRequestBuffer.entrySet()) {
+                    snapshot.put(entry.getKey(), List.copyOf(entry.getValue()));
+                }
+                groupRequestBuffer.clear();
+                listener.onGroupJoinRequests(snapshot);
+            }
             default -> {
                 // Loại không nhận biết: hiển thị như thông báo hệ thống thay vì bỏ mất dữ liệu.
                 listener.onSystemMessage(line);
@@ -436,6 +491,127 @@ public class ChatClient {
      */
     public void requestUserList() throws IOException {
         sendLine(Protocol.TYPE_USERS);
+    }
+
+    /**
+     * Yêu cầu server gửi lại danh sách toàn bộ nhóm hiện có.
+     *
+     * @throws IOException nếu chưa kết nối hoặc không gửi được
+     */
+    public void requestGroupList() throws IOException {
+        sendLine(Protocol.TYPE_GROUP_LIST_REQUEST);
+    }
+
+    /**
+     * Gửi yêu cầu tham gia một nhóm; trưởng nhóm của nhóm sẽ duyệt hoặc từ chối.
+     *
+     * @param groupId mã nhóm, ví dụ {@code "G1"}
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu mã nhóm rỗng
+     */
+    public void requestJoinGroup(String groupId) throws IOException {
+        sendLine(Protocol.groupJoinRequestMessage(requireGroupId(groupId)));
+    }
+
+    /**
+     * Trưởng nhóm duyệt yêu cầu tham gia nhóm.
+     *
+     * @param groupId  mã nhóm
+     * @param userName tên client đã gửi yêu cầu
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu mã nhóm/tên rỗng
+     */
+    public void approveGroupJoin(String groupId, String userName) throws IOException {
+        sendLine(Protocol.groupApproveMessage(requireGroupId(groupId),
+                requireName(userName, "client cần duyệt")));
+    }
+
+    /**
+     * Trưởng nhóm từ chối yêu cầu tham gia nhóm.
+     *
+     * @param groupId  mã nhóm
+     * @param userName tên client đã gửi yêu cầu
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu mã nhóm/tên rỗng
+     */
+    public void refuseGroupJoin(String groupId, String userName) throws IOException {
+        sendLine(Protocol.groupRefuseMessage(requireGroupId(groupId),
+                requireName(userName, "client cần từ chối")));
+    }
+
+    /**
+     * Trưởng nhóm thêm trực tiếp một client đang online vào nhóm.
+     *
+     * @param groupId  mã nhóm
+     * @param userName tên client cần thêm
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu mã nhóm/tên rỗng
+     */
+    public void addGroupMember(String groupId, String userName) throws IOException {
+        sendLine(Protocol.groupAddMemberMessage(requireGroupId(groupId),
+                requireName(userName, "thành viên cần thêm")));
+    }
+
+    /**
+     * Trưởng nhóm xóa một thành viên khỏi nhóm.
+     *
+     * @param groupId  mã nhóm
+     * @param userName tên thành viên cần xóa
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu mã nhóm/tên rỗng
+     */
+    public void removeGroupMember(String groupId, String userName) throws IOException {
+        sendLine(Protocol.groupKickMemberMessage(requireGroupId(groupId),
+                requireName(userName, "thành viên cần xóa")));
+    }
+
+    /**
+     * Trưởng nhóm đổi tên nhóm.
+     *
+     * @param groupId mã nhóm
+     * @param newName tên mới (tối đa {@link Protocol#MAX_GROUP_NAME_LENGTH} ký tự)
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu tên rỗng hoặc quá dài
+     */
+    public void renameGroup(String groupId, String newName) throws IOException {
+        String id = requireGroupId(groupId);
+        String name = requireName(newName, "tên nhóm");
+        if (name.length() > Protocol.MAX_GROUP_NAME_LENGTH) {
+            throw new IllegalArgumentException("Tên nhóm tối đa "
+                    + Protocol.MAX_GROUP_NAME_LENGTH + " ký tự.");
+        }
+        sendLine(Protocol.groupRenameMessage(id, name));
+    }
+
+    /**
+     * Trưởng nhóm xóa hẳn nhóm.
+     *
+     * @param groupId mã nhóm
+     * @throws IOException              nếu chưa kết nối hoặc không gửi được
+     * @throws IllegalArgumentException nếu mã nhóm rỗng
+     */
+    public void deleteGroupAsOwner(String groupId) throws IOException {
+        sendLine(Protocol.groupDestroyMessage(requireGroupId(groupId)));
+    }
+
+    /**
+     * @throws IllegalArgumentException nếu mã nhóm rỗng
+     */
+    private String requireGroupId(String groupId) {
+        if (groupId == null || groupId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Chưa chọn nhóm.");
+        }
+        return groupId.trim();
+    }
+
+    /**
+     * @throws IllegalArgumentException nếu tên rỗng
+     */
+    private String requireName(String name, String label) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new IllegalArgumentException("Chưa chọn " + label + ".");
+        }
+        return name.trim();
     }
 
     private String validateMessage(String message, String label) {

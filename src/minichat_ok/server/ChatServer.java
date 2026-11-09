@@ -545,6 +545,7 @@ public class ChatServer {
         notifyClientList();
         broadcastSystem(handler.getClientName() + " đã tham gia phòng chat.");
         broadcastUserList();
+        sendGroupList(handler);
         return true;
     }
 
@@ -606,12 +607,30 @@ public class ChatServer {
         notifyClientList();
 
         leaveAllGroups(clientName);
+        cancelJoinRequests(clientName);
 
         if (running) {
             broadcastSystem(clientName + " đã rời phòng chat.");
             broadcastUserList();
         }
+        broadcastGroupList();
         notifyGroupList();
+    }
+
+    /**
+     * Bỏ mọi yêu cầu tham gia nhóm đang chờ của một client đã ngắt kết nối và cập nhật
+     * danh sách yêu cầu cho trưởng nhóm của các nhóm liên quan.
+     */
+    private void cancelJoinRequests(String clientName) {
+        List<String> ownersToNotify = new ArrayList<>();
+        for (Group group : groups.values()) {
+            if (group.removeJoinRequest(clientName) && !ownersToNotify.contains(group.getOwner())) {
+                ownersToNotify.add(group.getOwner());
+            }
+        }
+        for (String owner : ownersToNotify) {
+            sendGroupRequests(owner);
+        }
     }
 
     /**
@@ -715,12 +734,425 @@ public class ChatServer {
             for (String name : memberNames) {
                 sendLineTo(name, line);
             }
-            log("Tạo nhóm " + groupId + " (người tạo " + creatorName + "): "
+            log("Tạo nhóm " + groupId + " (trưởng nhóm " + creatorName + "): "
                     + String.join(", ", memberNames));
+        }
+        broadcastGroupList();
+        notifyGroupCount();
+        notifyGroupList();
+    }
+    /**
+     * Xử lý yêu cầu tham gia nhóm của một client.
+     *
+     * <p>Yêu cầu không được thêm thành viên ngay mà được ghi vào danh sách "chờ duyệt"
+     * của nhóm; trưởng nhóm (người tạo nhóm) nhận được danh sách yêu cầu qua các dòng
+     * {@code GJREQ} và quyết định duyệt/từ chối bằng {@link #resolveGroupJoin}.</p>
+     *
+     * @param requesterName tên client gửi yêu cầu
+     * @param groupId       mã nhóm muốn tham gia
+     */
+    void requestJoinGroup(String requesterName, String groupId) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        if (id.isEmpty()) {
+            sendError(requesterName, Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm.");
+            return;
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            sendError(requesterName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+            return;
+        }
+        if (!clientsByName.containsKey(requesterName)) {
+            return;
+        }
+
+        String ownerName;
+        synchronized (broadcastLock) {
+            if (group.contains(requesterName)) {
+                sendError(requesterName, Protocol.ERROR_ALREADY_MEMBER,
+                        "Bạn đã là thành viên nhóm " + labelOf(group) + ".");
+                return;
+            }
+            if (group.size() >= MAX_GROUP_MEMBERS) {
+                sendError(requesterName, Protocol.ERROR_GROUP_TOO_LARGE,
+                        "Nhóm " + labelOf(group) + " đã đủ " + MAX_GROUP_MEMBERS + " thành viên.");
+                return;
+            }
+            if (countGroupsOf(requesterName) >= MAX_GROUPS_PER_CLIENT) {
+                sendError(requesterName, Protocol.ERROR_TOO_MANY_GROUPS,
+                        "Bạn đã tham gia tối đa " + MAX_GROUPS_PER_CLIENT + " nhóm.");
+                return;
+            }
+            if (!group.addJoinRequest(requesterName)) {
+                sendError(requesterName, Protocol.ERROR_JOIN_PENDING,
+                        "Bạn đã gửi yêu cầu tham gia nhóm " + labelOf(group)
+                                + " và đang chờ trưởng nhóm duyệt.");
+                return;
+            }
+            ownerName = group.getOwner();
+            sendLineTo(requesterName, Protocol.systemMessage("Đã gửi yêu cầu tham gia nhóm "
+                    + labelOf(group) + " tới trưởng nhóm " + ownerName + ". Vui lòng chờ duyệt."));
+            sendLineTo(ownerName, Protocol.systemMessage(requesterName
+                    + " xin tham gia nhóm " + labelOf(group)
+                    + ". Hãy duyệt hoặc từ chối trong tab Nhóm."));
+            sendGroupRequests(ownerName);
+        }
+        log(requesterName + " xin tham gia nhóm " + id + " (chờ " + ownerName + " duyệt).");
+    }
+
+    /**
+     * Trưởng nhóm duyệt hoặc từ chối một yêu cầu tham gia nhóm.
+     *
+     * @param ownerName     tên client đang giữ quyền trưởng nhóm
+     * @param groupId       mã nhóm
+     * @param requesterName tên client đã gửi yêu cầu
+     * @param accept        {@code true} để duyệt, {@code false} để từ chối
+     */
+    void resolveGroupJoin(String ownerName, String groupId, String requesterName, boolean accept) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String requester = (requesterName != null) ? requesterName.trim() : "";
+        if (id.isEmpty() || requester.isEmpty()) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm hoặc tên client cần duyệt.");
+            return;
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            sendError(ownerName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+            return;
+        }
+        if (!group.isOwner(ownerName)) {
+            sendError(ownerName, Protocol.ERROR_NOT_OWNER,
+                    "Bạn không phải trưởng nhóm " + labelOf(group) + " nên không thể duyệt yêu cầu.");
+            return;
+        }
+
+        synchronized (broadcastLock) {
+            if (!group.hasJoinRequest(requester)) {
+                sendError(ownerName, Protocol.ERROR_NO_JOIN_REQUEST,
+                        "Không có yêu cầu tham gia nhóm " + labelOf(group)
+                                + " của " + requester + " (có thể đã được xử lý).");
+                return;
+            }
+            group.removeJoinRequest(requester);
+
+            if (accept) {
+                String failure = addMemberInternal(group, requester);
+                if (failure != null) {
+                    sendError(ownerName, Protocol.ERROR_UNKNOWN_MEMBER, failure);
+                    sendLineTo(requester, Protocol.groupJoinResultMessage(id, false, failure));
+                    log("Duyệt " + requester + " vào nhóm " + id + " thất bại: " + failure);
+                } else {
+                    sendLineTo(requester, Protocol.groupJoinResultMessage(id, true,
+                            "Trưởng nhóm " + ownerName + " đã duyệt bạn vào nhóm "
+                                    + labelOf(group) + "."));
+                    log("Trưởng nhóm " + ownerName + " duyệt " + requester + " vào nhóm " + id + ".");
+                }
+            } else {
+                sendLineTo(requester, Protocol.groupJoinResultMessage(id, false,
+                        "Trưởng nhóm " + ownerName + " đã từ chối yêu cầu tham gia nhóm "
+                                + labelOf(group) + "."));
+                log("Trưởng nhóm " + ownerName + " từ chối " + requester + " vào nhóm " + id + ".");
+            }
+
+            sendGroupRequests(ownerName);
+            broadcastGroupList();
         }
         notifyGroupCount();
         notifyGroupList();
     }
+
+    /**
+     * Trưởng nhóm thêm trực tiếp một client đang online vào nhóm (không cần chờ duyệt).
+     *
+     * @param ownerName  tên client đang giữ quyền trưởng nhóm
+     * @param groupId    mã nhóm
+     * @param memberName tên client cần thêm
+     */
+    void addMemberByOwner(String ownerName, String groupId, String memberName) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String member = (memberName != null) ? memberName.trim() : "";
+        if (id.isEmpty() || member.isEmpty()) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm hoặc tên thành viên.");
+            return;
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            sendError(ownerName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+            return;
+        }
+        if (!group.isOwner(ownerName)) {
+            sendError(ownerName, Protocol.ERROR_NOT_OWNER,
+                    "Bạn không phải trưởng nhóm " + labelOf(group) + " nên không thể thêm thành viên.");
+            return;
+        }
+        if (!clientsByName.containsKey(member)) {
+            sendError(ownerName, Protocol.ERROR_UNKNOWN_MEMBER,
+                    "Không tìm thấy " + member + " (có thể đã ngắt kết nối).");
+            return;
+        }
+
+        synchronized (broadcastLock) {
+            String failure = addMemberInternal(group, member);
+            if (failure != null) {
+                sendError(ownerName, Protocol.ERROR_BAD_REQUEST, failure);
+                return;
+            }
+            sendGroupRequests(ownerName);
+            broadcastGroupList();
+        }
+        log("Trưởng nhóm " + ownerName + " thêm " + member + " vào nhóm " + id + ".");
+        notifyGroupCount();
+        notifyGroupList();
+    }
+
+    /**
+     * Trưởng nhóm xóa một thành viên khỏi nhóm.
+     *
+     * @param ownerName  tên client đang giữ quyền trưởng nhóm
+     * @param groupId    mã nhóm
+     * @param memberName tên thành viên cần xóa
+     */
+    void removeMemberByOwner(String ownerName, String groupId, String memberName) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String member = (memberName != null) ? memberName.trim() : "";
+        if (id.isEmpty() || member.isEmpty()) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm hoặc tên thành viên.");
+            return;
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            sendError(ownerName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+            return;
+        }
+        if (!group.isOwner(ownerName)) {
+            sendError(ownerName, Protocol.ERROR_NOT_OWNER,
+                    "Bạn không phải trưởng nhóm " + labelOf(group) + " nên không thể xóa thành viên.");
+            return;
+        }
+        if (member.equals(ownerName)) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST,
+                    "Bạn không thể tự xóa mình khỏi nhóm; hãy dùng nút \"Rời nhóm\" hoặc \"Xóa nhóm\".");
+            return;
+        }
+
+        synchronized (broadcastLock) {
+            if (!group.contains(member)) {
+                sendError(ownerName, Protocol.ERROR_NOT_MEMBER,
+                        member + " không phải thành viên nhóm " + labelOf(group) + ".");
+                return;
+            }
+            removeMemberAndNotify(group, member, "bị trưởng nhóm " + ownerName + " xóa khỏi nhóm");
+            sendLineTo(member, Protocol.groupDeletedMessage(id,
+                    "Bạn đã bị trưởng nhóm " + ownerName + " xóa khỏi nhóm " + labelOf(group) + "."));
+            sendGroupRequests(ownerName);
+            broadcastGroupList();
+        }
+        log("Trưởng nhóm " + ownerName + " xóa " + member + " khỏi nhóm " + id + ".");
+        notifyGroupCount();
+        notifyGroupList();
+    }
+
+    /**
+     * Trưởng nhóm đổi tên nhóm.
+     *
+     * @param ownerName tên client đang giữ quyền trưởng nhóm
+     * @param groupId   mã nhóm
+     * @param newName   tên mới
+     */
+    void renameGroupByOwner(String ownerName, String groupId, String newName) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        String name = (newName != null) ? newName.trim() : "";
+        if (id.isEmpty() || name.isEmpty()) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm hoặc tên nhóm mới.");
+            return;
+        }
+        if (name.length() > Group.MAX_NAME_LENGTH) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST,
+                    "Tên nhóm tối đa " + Group.MAX_NAME_LENGTH + " ký tự.");
+            return;
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            sendError(ownerName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+            return;
+        }
+        if (!group.isOwner(ownerName)) {
+            sendError(ownerName, Protocol.ERROR_NOT_OWNER,
+                    "Bạn không phải trưởng nhóm " + labelOf(group) + " nên không thể đổi tên nhóm.");
+            return;
+        }
+
+        String oldName = group.getName();
+        group.setName(name);
+        synchronized (broadcastLock) {
+            sendToNames(group.snapshotMembers(), Protocol.systemMessage(ownerName
+                    + " đã đổi tên nhóm " + id + " từ \"" + oldName + "\" thành \"" + name + "\"."));
+            broadcastGroupList();
+        }
+        log("Trưởng nhóm " + ownerName + " đổi tên nhóm " + id + ": \"" + oldName
+                + "\" -> \"" + name + "\".");
+        notifyGroupList();
+    }
+
+    /**
+     * Trưởng nhóm xóa hẳn nhóm; mọi thành viên nhận dòng {@code GDEL} để gỡ nhóm khỏi giao diện.
+     *
+     * @param ownerName tên client đang giữ quyền trưởng nhóm
+     * @param groupId   mã nhóm
+     */
+    void deleteGroupByOwner(String ownerName, String groupId) {
+        String id = (groupId != null) ? groupId.trim() : "";
+        if (id.isEmpty()) {
+            sendError(ownerName, Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm.");
+            return;
+        }
+        Group group = groups.get(id);
+        if (group == null) {
+            sendError(ownerName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+            return;
+        }
+        if (!group.isOwner(ownerName)) {
+            sendError(ownerName, Protocol.ERROR_NOT_OWNER,
+                    "Bạn không phải trưởng nhóm " + labelOf(group) + " nên không thể xóa nhóm.");
+            return;
+        }
+
+        synchronized (broadcastLock) {
+            List<String> members = group.snapshotMembers();
+            if (!groups.remove(id, group)) {
+                sendError(ownerName, Protocol.ERROR_GROUP_NOT_FOUND, "Nhóm " + id + " không tồn tại.");
+                return;
+            }
+            sendToNames(members, Protocol.groupDeletedMessage(id,
+                    "Trưởng nhóm " + ownerName + " đã xóa nhóm " + labelOf(group) + "."));
+            sendGroupRequests(ownerName);
+            broadcastGroupList();
+        }
+        log("Trưởng nhóm " + ownerName + " xóa nhóm " + id + ".");
+        notifyGroupCount();
+        notifyGroupList();
+    }
+
+    /**
+     * Thêm một client vào nhóm và thông báo cho các thành viên.
+     *
+     * <p>Phương thức này giả định người gọi đã giữ {@code broadcastLock} để thứ tự các
+     * dòng gửi xuống client luôn nhất quán.</p>
+     *
+     * @return {@code null} nếu thêm thành công, ngược lại là thông điệp lỗi tiếng Việt
+     */
+    private String addMemberInternal(Group group, String memberName) {
+        ClientHandler handler = clientsByName.get(memberName);
+        if (handler == null || handler.isClosed()) {
+            return memberName + " không còn kết nối.";
+        }
+        if (group.size() >= MAX_GROUP_MEMBERS) {
+            return "Nhóm " + labelOf(group) + " đã đủ " + MAX_GROUP_MEMBERS + " thành viên.";
+        }
+        if (countGroupsOf(memberName) >= MAX_GROUPS_PER_CLIENT) {
+            return memberName + " đã tham gia tối đa " + MAX_GROUPS_PER_CLIENT + " nhóm.";
+        }
+        if (!group.addMember(memberName)) {
+            return memberName + " đã là thành viên nhóm " + labelOf(group) + ".";
+        }
+
+        group.removeJoinRequest(memberName);
+        sendLineTo(memberName, Protocol.groupInfoMessage(group.getId(), group.snapshotMembers()));
+        List<String> others = new ArrayList<>(group.snapshotMembers());
+        others.remove(memberName);
+        sendToNames(others, Protocol.systemMessage(memberName
+                + " đã tham gia nhóm " + labelOf(group) + "."));
+        return null;
+    }
+
+    /**
+     * Gửi ảnh chụp danh sách toàn bộ nhóm (các dòng {@code GALL} + {@code GALL_END}).
+     *
+     * @param handler client cần nhận danh sách (bỏ qua nếu {@code null})
+     */
+    void sendGroupList(ClientHandler handler) {
+        if (handler == null) {
+            return;
+        }
+        synchronized (broadcastLock) {
+            for (String line : groupListLines()) {
+                handler.sendLine(line);
+            }
+        }
+    }
+
+    /**
+     * Phát ảnh chụp danh sách toàn bộ nhóm cho mọi client đang kết nối.
+     * Client dùng danh sách này để hiển thị "Nhóm của bạn" và "Tất cả nhóm".
+     */
+    private void broadcastGroupList() {
+        synchronized (broadcastLock) {
+            List<String> lines = groupListLines();
+            for (ClientHandler handler : handlers) {
+                if (handler.isClosed()) {
+                    continue;
+                }
+                for (String line : lines) {
+                    handler.sendLine(line);
+                }
+            }
+        }
+    }
+
+    /**
+     * Gửi ảnh chụp danh sách yêu cầu chờ duyệt của các nhóm do một client làm trưởng nhóm.
+     *
+     * @param ownerName tên trưởng nhóm cần nhận danh sách
+     */
+    private void sendGroupRequests(String ownerName) {
+        ClientHandler handler = clientsByName.get(ownerName);
+        if (handler == null) {
+            return;
+        }
+        synchronized (broadcastLock) {
+            List<Group> snapshot = new ArrayList<>(groups.values());
+            snapshot.sort(Comparator.comparingInt(group -> groupNumber(group.getId())));
+            List<String> lines = new ArrayList<>();
+            for (Group group : snapshot) {
+                if (group.isOwner(ownerName) && group.joinRequestCount() > 0) {
+                    lines.add(Protocol.groupRequestsMessage(group.getId(), group.snapshotJoinRequests()));
+                }
+            }
+            lines.add(Protocol.groupRequestsEndMessage());
+            for (String line : lines) {
+                handler.sendLine(line);
+            }
+        }
+    }
+
+    /**
+     * Tạo các dòng mô tả toàn bộ nhóm, kết thúc bằng {@code GALL_END}.
+     * Người gọi phải giữ {@code broadcastLock}.
+     */
+    private List<String> groupListLines() {
+        List<Group> snapshot = new ArrayList<>(groups.values());
+        snapshot.sort(Comparator.comparingInt(group -> groupNumber(group.getId())));
+        List<String> lines = new ArrayList<>(snapshot.size() + 1);
+        for (Group group : snapshot) {
+            lines.add(Protocol.groupListItemMessage(group.getId(), group.getOwner(),
+                    group.snapshotMembers(), group.getName()));
+        }
+        lines.add(Protocol.groupListEndMessage());
+        return lines;
+    }
+
+    /**
+     * @param group nhóm cần lấy nhãn
+     * @return nhãn hiển thị dạng {@code "Tên nhóm (G1)"} hoặc chỉ mã nhóm nếu chưa có tên
+     */
+    private String labelOf(Group group) {
+        String name = group.getName();
+        if (name == null || name.isBlank() || name.equals(group.getId())) {
+            return group.getId();
+        }
+        return name + " (" + group.getId() + ")";
+    }
+
 
     /**
      * Gửi tin nhắn của một thành viên tới tất cả thành viên còn lại của nhóm.
@@ -777,6 +1209,7 @@ public class ChatServer {
             return;
         }
         removeMemberAndNotify(group, senderName, "đã rời nhóm");
+        broadcastGroupList();
         notifyGroupCount();
         notifyGroupList();
     }
@@ -799,15 +1232,28 @@ public class ChatServer {
     /**
      * Xóa một thành viên khỏi nhóm và thông báo cho các thành viên còn lại.
      * Nhóm rỗng bị xóa khỏi registry.
+     *
+     * <p>Nếu người bị xóa là trưởng nhóm, quyền trưởng nhóm được chuyển cho thành viên
+     * đầu tiên còn lại để nhóm vẫn có người duyệt yêu cầu tham gia và quản lý thành viên.
+     * Yêu cầu tham gia đang chờ của người bị xóa cũng bị bỏ.</p>
      */
     private void removeMemberAndNotify(Group group, String memberName, String reason) {
         if (!group.removeMember(memberName)) {
             return;
         }
+        group.removeJoinRequest(memberName);
         if (group.isEmpty()) {
             groups.remove(group.getId(), group);
             log("Nhóm " + group.getId() + " không còn thành viên, đã xóa.");
             return;
+        }
+        if (group.isOwner(memberName)) {
+            String newOwner = group.snapshotMembers().get(0);
+            group.setOwner(newOwner);
+            sendLineTo(newOwner, Protocol.systemMessage(
+                    "Bạn trở thành trưởng nhóm mới của nhóm " + group.getId() + "."));
+            sendGroupRequests(newOwner);
+            log("Chuyển quyền trưởng nhóm " + group.getId() + " sang " + newOwner + ".");
         }
         String line = Protocol.groupMemberLeftMessage(group.getId(), memberName, reason);
         sendToNames(group.snapshotMembers(), line);
@@ -1090,14 +1536,18 @@ public class ChatServer {
             if (!group.addMember(member)) {
                 return member + " đã là thành viên của nhóm " + id + ".";
             }
+            group.removeJoinRequest(member);
             sendLineTo(member, Protocol.groupInfoMessage(id, group.snapshotMembers()));
             List<String> others = new ArrayList<>(group.snapshotMembers());
             others.remove(member);
             sendToNames(others, Protocol.systemMessage(
                     member + " đã được quản trị viên thêm vào nhóm " + id + "."));
+            sendGroupRequests(group.getOwner());
+            broadcastGroupList();
         }
         log("Quản trị viên thêm " + member + " vào nhóm " + id
                 + " (còn " + group.size() + " thành viên).");
+        notifyGroupCount();
         notifyGroupList();
         return null;
     }
@@ -1133,6 +1583,7 @@ public class ChatServer {
             removeMemberAndNotify(group, member, "bị quản trị viên xóa khỏi nhóm");
             sendLineTo(member, Protocol.groupDeletedMessage(id,
                     "Bạn đã bị quản trị viên xóa khỏi nhóm " + id + "."));
+            broadcastGroupList();
         }
         log("Quản trị viên xóa " + member + " khỏi nhóm " + id + ".");
         notifyGroupCount();
@@ -1169,6 +1620,7 @@ public class ChatServer {
         group.setName(name);
         sendToNames(group.snapshotMembers(), Protocol.systemMessage(
                 "Quản trị viên đã đổi tên nhóm " + id + " thành \"" + name + "\"."));
+        broadcastGroupList();
         log("Quản trị viên đổi tên nhóm " + id + ": \"" + oldName + "\" -> \"" + name + "\".");
         notifyGroupList();
         return null;
@@ -1194,6 +1646,7 @@ public class ChatServer {
             groups.remove(id, group);
             sendToNames(group.snapshotMembers(), Protocol.groupDeletedMessage(id,
                     "Nhóm " + id + " đã bị quản trị viên xóa."));
+            broadcastGroupList();
         }
         log("Quản trị viên xóa nhóm " + id + " (\"" + group.getName() + "\", "
                 + group.size() + " thành viên).");

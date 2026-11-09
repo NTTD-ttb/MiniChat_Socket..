@@ -147,13 +147,26 @@ public class ClientHandler implements Runnable {
             case Protocol.TYPE_GROUP_MESSAGE -> handleGroupMessage(trimmed);
             case Protocol.TYPE_GROUP_CREATE -> handleGroupCreate(trimmed);
             case Protocol.TYPE_GROUP_LEAVE -> handleGroupLeave(trimmed);
+            case Protocol.TYPE_GROUP_JOIN -> handleGroupJoin(trimmed);
+            case Protocol.TYPE_GROUP_APPROVE -> handleGroupApprove(trimmed, true);
+            case Protocol.TYPE_GROUP_REFUSE -> handleGroupApprove(trimmed, false);
+            case Protocol.TYPE_GROUP_ADD_MEMBER -> handleGroupAddMember(trimmed);
+            case Protocol.TYPE_GROUP_KICK_MEMBER -> handleGroupKickMember(trimmed);
+            case Protocol.TYPE_GROUP_RENAME -> handleGroupRename(trimmed);
+            case Protocol.TYPE_GROUP_DESTROY -> handleGroupDestroy(trimmed);
             case Protocol.TYPE_USERS -> {
                 log(clientName + " yêu cầu danh sách client đang online.");
                 server.sendUserList(this);
             }
+            case Protocol.TYPE_GROUP_LIST_REQUEST -> {
+                log(clientName + " yêu cầu danh sách nhóm.");
+                server.sendGroupList(this);
+            }
             case Protocol.TYPE_NAME, Protocol.TYPE_SYSTEM, Protocol.TYPE_GROUP,
                     Protocol.TYPE_GROUP_LEFT, Protocol.TYPE_GROUP_DELETE,
-                    Protocol.TYPE_ERROR,
+                    Protocol.TYPE_GROUP_JOIN_RESULT, Protocol.TYPE_GROUP_LIST_ITEM,
+                    Protocol.TYPE_GROUP_LIST_END, Protocol.TYPE_GROUP_REQUESTS_ITEM,
+                    Protocol.TYPE_GROUP_REQUESTS_END, Protocol.TYPE_ERROR,
                     Protocol.TYPE_JOIN_OK, Protocol.TYPE_JOIN_DENY ->
                     log("Bỏ qua dòng " + type + " không hợp lệ từ " + clientName);
             case Protocol.TYPE_JOIN -> {
@@ -231,6 +244,93 @@ public class ClientHandler implements Runnable {
             return;
         }
         server.leaveGroup(clientName, groupId);
+    }
+
+    /**
+     * Xử lý lệnh {@code GJOIN|ma-nhom}: client xin vào nhóm, chờ trưởng nhóm duyệt.
+     */
+    private void handleGroupJoin(String line) {
+        String groupId = Protocol.payload(line).trim();
+        if (groupId.isEmpty()) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm.");
+            return;
+        }
+        log("Nhận yêu cầu tham gia nhóm " + groupId + " từ " + clientName + ".");
+        server.requestJoinGroup(clientName, groupId);
+    }
+
+    /**
+     * Xử lý lệnh {@code GAPPROVE|ma-nhom|ten} hoặc {@code GREFUSE|ma-nhom|ten}:
+     * trưởng nhóm duyệt/từ chối yêu cầu tham gia.
+     */
+    private void handleGroupApprove(String line, boolean accept) {
+        String[] parts = Protocol.fields(line, 3);
+        if (parts.length < 3) {
+            sendError(Protocol.ERROR_BAD_REQUEST,
+                    "Lệnh duyệt phải có dạng GAPPROVE|ma-nhom|ten-client.");
+            return;
+        }
+        String groupId = parts[1].trim();
+        String requester = parts[2].trim();
+        if (groupId.isEmpty() || requester.isEmpty()) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm hoặc tên client cần duyệt.");
+            return;
+        }
+        server.resolveGroupJoin(clientName, groupId, requester, accept);
+    }
+
+    /**
+     * Xử lý lệnh {@code GADD|ma-nhom|ten}: trưởng nhóm thêm trực tiếp một thành viên.
+     */
+    private void handleGroupAddMember(String line) {
+        String[] parts = Protocol.fields(line, 3);
+        if (parts.length < 3 || parts[1].trim().isEmpty() || parts[2].trim().isEmpty()) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Lệnh thêm thành viên phải có dạng GADD|ma-nhom|ten-client.");
+            return;
+        }
+        server.addMemberByOwner(clientName, parts[1].trim(), parts[2].trim());
+    }
+
+    /**
+     * Xử lý lệnh {@code GKICK|ma-nhom|ten}: trưởng nhóm xóa một thành viên khỏi nhóm.
+     */
+    private void handleGroupKickMember(String line) {
+        String[] parts = Protocol.fields(line, 3);
+        if (parts.length < 3 || parts[1].trim().isEmpty() || parts[2].trim().isEmpty()) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Lệnh xóa thành viên phải có dạng GKICK|ma-nhom|ten-client.");
+            return;
+        }
+        server.removeMemberByOwner(clientName, parts[1].trim(), parts[2].trim());
+    }
+
+    /**
+     * Xử lý lệnh {@code GRENAME|ma-nhom|ten-moi}: trưởng nhóm đổi tên nhóm.
+     */
+    private void handleGroupRename(String line) {
+        String[] parts = Protocol.fields(line, 3);
+        if (parts.length < 3) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Lệnh đổi tên phải có dạng GRENAME|ma-nhom|ten-moi.");
+            return;
+        }
+        String groupId = parts[1].trim();
+        String name = parts[2].trim();
+        if (groupId.isEmpty() || name.isEmpty()) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm hoặc tên nhóm mới.");
+            return;
+        }
+        server.renameGroupByOwner(clientName, groupId, name);
+    }
+
+    /**
+     * Xử lý lệnh {@code GDELETE|ma-nhom}: trưởng nhóm xóa hẳn nhóm.
+     */
+    private void handleGroupDestroy(String line) {
+        String groupId = Protocol.payload(line).trim();
+        if (groupId.isEmpty()) {
+            sendError(Protocol.ERROR_BAD_REQUEST, "Thiếu mã nhóm.");
+            return;
+        }
+        server.deleteGroupByOwner(clientName, groupId);
     }
 
     /**
